@@ -5,12 +5,15 @@ import { getAccountById, mfaRequired, type Role } from "@/lib/accounts/repo";
 
 export type { Role };
 export type Session = { accountId: string; email: string; role: Role; parokiId: string | null };
-export type Amr = "pwd" | "otp";
+export type Amr = "pwd" | "otp" | "google";
 
 export const SESSION_COOKIE = "__Host-kep_session";
 export const PREAUTH_COOKIE = "kep_preauth";
 /** Pre-auth cookie is only sent to the enrollment route. */
 export const PREAUTH_PATH = "/api/auth/mfa/enroll";
+/** Google SSO: TOTP step for accounts that already have a secret. Own cookie, own path, own purpose. */
+export const PREAUTH_VERIFY_COOKIE = "kep_preauth_verify";
+export const PREAUTH_VERIFY_PATH = "/api/auth/google/mfa";
 export const SESSION_TTL_S = 15 * 60;
 export const SESSION_MAX_S = 8 * 3600;
 export const PREAUTH_TTL_S = 5 * 60;
@@ -20,6 +23,9 @@ const ISSUER = "kep";
 const AUD_SESSION = "kep-session";
 const AUD_PREAUTH = "kep-preauth";
 const PURPOSE_ENROLL = "mfa_enroll";
+const PURPOSE_VERIFY = "mfa_verify";
+export type PreauthPurpose = "mfa_enroll" | "mfa_verify";
+export type PreauthVia = "pwd" | "google";
 const REQUIRED = ["exp", "iat", "sub"];
 
 function secretKey(): Uint8Array {
@@ -87,7 +93,7 @@ async function resolve(cookieHeader: string): Promise<{ session: Session; starte
     if (!payload.sub || typeof payload.sa !== "number" || !Array.isArray(payload.amr)) return null;
     sub = payload.sub;
     startedAt = payload.sa;
-    amr = payload.amr.filter((x): x is Amr => x === "pwd" || x === "otp");
+    amr = payload.amr.filter((x): x is Amr => x === "pwd" || x === "otp" || x === "google");
   } catch {
     return null;
   }
@@ -118,14 +124,18 @@ export const credentialFingerprint = (passwordHash: string) =>
  */
 export async function issuePreauth(args: {
   accountId: string;
+  /** Credential material the token is bound to: the password hash, or `google:<sub>` for SSO. */
   passwordHash: string;
+  purpose?: PreauthPurpose;
+  via?: PreauthVia;
   pendingSecretEnc?: string;
   origIat?: number;
 }): Promise<string> {
   const iat = nowS();
   const oi = args.origIat ?? iat;
   return new SignJWT({
-    purpose: PURPOSE_ENROLL,
+    purpose: args.purpose ?? PURPOSE_ENROLL,
+    via: args.via ?? "pwd",
     pf: credentialFingerprint(args.passwordHash),
     oi,
     ...(args.pendingSecretEnc ? { ps: args.pendingSecretEnc } : {}),
@@ -139,10 +149,17 @@ export async function issuePreauth(args: {
     .sign(secretKey());
 }
 
-export type Preauth = { accountId: string; fingerprint: string; origIat: number; pendingSecretEnc: string | null };
+export type Preauth = {
+  accountId: string;
+  fingerprint: string;
+  origIat: number;
+  pendingSecretEnc: string | null;
+  via: PreauthVia;
+};
 
-export async function readPreauth(cookieHeader: string): Promise<Preauth | null> {
-  const token = getCookie(cookieHeader ?? "", PREAUTH_COOKIE);
+export async function readPreauth(cookieHeader: string, purpose: PreauthPurpose = PURPOSE_ENROLL): Promise<Preauth | null> {
+  const cookieName = purpose === PURPOSE_VERIFY ? PREAUTH_VERIFY_COOKIE : PREAUTH_COOKIE;
+  const token = getCookie(cookieHeader ?? "", cookieName);
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secretKey(), {
@@ -151,7 +168,7 @@ export async function readPreauth(cookieHeader: string): Promise<Preauth | null>
       audience: AUD_PREAUTH,
       requiredClaims: REQUIRED,
     });
-    if (!payload.sub || payload.purpose !== PURPOSE_ENROLL || typeof payload.pf !== "string" || typeof payload.oi !== "number") {
+    if (!payload.sub || payload.purpose !== purpose || typeof payload.pf !== "string" || typeof payload.oi !== "number") {
       return null;
     }
     return {
@@ -159,6 +176,7 @@ export async function readPreauth(cookieHeader: string): Promise<Preauth | null>
       fingerprint: payload.pf,
       origIat: payload.oi,
       pendingSecretEnc: typeof payload.ps === "string" ? payload.ps : null,
+      via: payload.via === "google" ? "google" : "pwd",
     };
   } catch {
     return null;
@@ -172,3 +190,6 @@ export const sessionCookie = (token: string) => cookieString(SESSION_COOKIE, tok
 export const clearSessionCookie = () => cookieString(SESSION_COOKIE, "", 0);
 export const preauthCookie = (token: string, maxAgeS: number) => cookieString(PREAUTH_COOKIE, token, maxAgeS, PREAUTH_PATH);
 export const clearPreauthCookie = () => cookieString(PREAUTH_COOKIE, "", 0, PREAUTH_PATH);
+export const preauthVerifyCookie = (token: string, maxAgeS: number) =>
+  cookieString(PREAUTH_VERIFY_COOKIE, token, maxAgeS, PREAUTH_VERIFY_PATH);
+export const clearPreauthVerifyCookie = () => cookieString(PREAUTH_VERIFY_COOKIE, "", 0, PREAUTH_VERIFY_PATH);

@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import styles from "./login.module.css";
 
 type Step = "credentials" | "mfa" | "enroll";
+export type Initial = { step?: "mfa" | "enroll"; googleError?: boolean };
 
 async function post(url: string, body: unknown) {
   const res = await fetch(url, {
@@ -15,15 +16,25 @@ async function post(url: string, body: unknown) {
   return { status: res.status, data: (await res.json().catch(() => ({}))) as Record<string, string> };
 }
 
-export default function LoginForm() {
+export default function LoginForm({ initial = {} }: { initial?: Initial }) {
   const router = useRouter();
-  const [step, setStep] = useState<Step>("credentials");
+  // Coming back from Google SSO: the Google callback already set the matching pre-auth cookie.
+  const viaGoogle = initial.step !== undefined;
+  const [step, setStep] = useState<Step>(initial.step ?? "credentials");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [secret, setSecret] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initial.googleError ? "Login Google gagal. Gunakan akun yang terdaftar atau masuk dengan email dan password." : "");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (initial.step !== "enroll") return;
+    post("/api/auth/mfa/enroll", {}).then((s) => {
+      if (s.data.secret) setSecret(s.data.secret);
+      else setError(s.data.error ?? "Sesi habis. Silakan masuk kembali.");
+    });
+  }, [initial.step]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -32,6 +43,12 @@ export default function LoginForm() {
     try {
       if (step === "enroll") {
         const r = await post("/api/auth/mfa/enroll", { code });
+        if (r.data.ok) return void router.replace("/");
+        setError(r.data.error ?? "Gagal");
+        return;
+      }
+      if (step === "mfa" && viaGoogle) {
+        const r = await post("/api/auth/google/mfa", { code });
         if (r.data.ok) return void router.replace("/");
         setError(r.data.error ?? "Gagal");
         return;
@@ -74,6 +91,9 @@ export default function LoginForm() {
       <button className={styles.button} type="submit" disabled={busy}>
         {step === "credentials" ? "Masuk" : "Verifikasi"}
       </button>
+      {step === "credentials" && (
+        <a className={styles.google} href="/api/auth/google/start">Masuk dengan Google</a>
+      )}
     </form>
   );
 }

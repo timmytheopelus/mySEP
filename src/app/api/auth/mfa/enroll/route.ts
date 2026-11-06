@@ -41,7 +41,8 @@ export async function POST(req: Request): Promise<Response> {
 
   const acc = await getAccountById(pre.accountId);
   // Void when the account is gone or its password changed since the pre-auth token was issued.
-  if (!acc || !acc.passwordHash || credentialFingerprint(acc.passwordHash) !== pre.fingerprint) {
+  const credential = pre.via === "google" ? (acc?.googleSub ? `google:${acc.googleSub}` : null) : (acc?.passwordHash ?? null);
+  if (!acc || !credential || credentialFingerprint(credential) !== pre.fingerprint) {
     return json({ error: INVALID }, 401);
   }
   if (acc.mfaSecretEnc) return json({ error: "MFA sudah terdaftar" }, 409);
@@ -66,7 +67,8 @@ export async function POST(req: Request): Promise<Response> {
         `?secret=${secret}&issuer=${encodeURIComponent(ISSUER)}`;
       const token = await issuePreauth({
         accountId: acc.id,
-        passwordHash: acc.passwordHash,
+        passwordHash: credential,
+        via: pre.via,
         pendingSecretEnc: encryptSecret(secret),
         origIat: pre.origIat,
       });
@@ -92,7 +94,7 @@ export async function POST(req: Request): Promise<Response> {
     await recordSuccess(acc.id, now, step);
     const token = await issueSession(
       { accountId: acc.id, email: acc.email, role: acc.role, parokiId: acc.parokiId },
-      { amr: ["pwd", "otp"] },
+      { amr: [pre.via === "google" ? "google" : "pwd", "otp"] },
     );
     return withCookies(json({ ok: true, role: acc.role }), [sessionCookie(token), clearPreauthCookie()]);
   } catch {

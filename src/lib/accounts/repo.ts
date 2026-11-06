@@ -11,6 +11,8 @@ export type Account = {
   role: Role;
   parokiId: string | null;
   passwordHash: string | null;
+  /** Bound Google subject (ID Google); null until the first Google login. */
+  googleSub: string | null;
   /** AES-GCM blob (see encryptSecret); null when MFA is not enrolled. */
   mfaSecretEnc: string | null;
   failed: number;
@@ -59,6 +61,7 @@ function toAccount(r: AtRecord): Account | null {
     role,
     parokiId: Array.isArray(paroki) && typeof paroki[0] === "string" ? paroki[0] : null,
     passwordHash: str(f[A.hashPassword]),
+    googleSub: str(f[A.idGoogle]),
     mfaSecretEnc: str(f[A.rahasiaMfa]),
     failed: typeof failed === "number" ? failed : 0,
     lockedUntil: str(f[A.waktuKunci]),
@@ -119,3 +122,7 @@ export async function saveMfaEnrollment(id: string, secretEnc: string, totpStep:
 }
 
 export const mfaRequired = (role: Role) => role === "SEP" || role === "PIC";
+
+export async function bindGoogleSub(id: string, sub: string): Promise<void> {
+  await updateRecords(T.akunKep, [{ id, fields: { [A.idGoogle]: sub } }]);
+}
