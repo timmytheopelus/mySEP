@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@node-rs/argon2": "2.2.2",
-    "jose": "^6.2.15",
+    "jose": "6.2.15",
     "next": "16.4.5",
     "otplib": "13.6.0",
     "react": "19.3.1",
