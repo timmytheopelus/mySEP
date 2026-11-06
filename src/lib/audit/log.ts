@@ -12,12 +12,13 @@ const text = (v: unknown): string | undefined => {
  * Append-only AuditKEP row. Throws when the write fails: callers that change state must write the
  * audit first and abort on failure (same convention as account management).
  */
-export async function logAudit(entry: { actorEmail: string; action: string; targetId: string; before?: unknown; after?: unknown }): Promise<void> {
+export async function logAudit(entry: { actorEmail: string; action: string; targetId: string; before?: unknown; after?: unknown; opId?: string }): Promise<void> {
   await writeAudit({
     aksi: entry.action,
     pelaku: entry.actorEmail,
     targetId: entry.targetId,
     sebelum: text(entry.before),
     sesudah: text(entry.after),
+    opId: entry.opId,
   });
 }

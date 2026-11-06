@@ -202,17 +202,17 @@ describe("setSemuaHadir", () => {
   it("marks every active peserta, skips mundur, returns the count; replay is a no-op", async () => {
     seed(["A", "B", "C", "D"], { 3: { [P.keterangan]: "MENGUNDURKAN DIRI" } });
     store[T.pendaftaranEvents][0].fields[P.pertemuanHadir] = [S2];
-    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3 });
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3, remaining: 0 });
     expect(hadirOf(pid(1))).toEqual([S2, S1]);
     expect(hadirOf(pid(3))).toEqual([]);
     expect(hadirOf(pid(99))).toEqual([]);
     const writes = vi.mocked(client.updateRecords).mock.calls.length;
-    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3 });
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3, remaining: 0 });
     expect(vi.mocked(client.updateRecords).mock.calls.length).toBe(writes);
   });
   it("already-present peserta are not counted", async () => {
     await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
-    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3 });
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3, remaining: 0 });
   });
   it("SEP 403, other parish 404, foreign subEvent 404", async () => {
     expect(await status(setSemuaHadir(sep, KEP_A, S1, op("s")))).toBe(403);

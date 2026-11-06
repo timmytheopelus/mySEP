@@ -198,7 +198,7 @@ export async function saveTotpStep(id: string, step: number): Promise<void> {
 }
 
 /** Append-only audit row. Throws on failure so callers can refuse to act unaudited. */
-export async function writeAudit(row: { aksi: string; pelaku: string; targetId: string; sebelum?: string; sesudah?: string }): Promise<void> {
+export async function writeAudit(row: { aksi: string; pelaku: string; targetId: string; sebelum?: string; sesudah?: string; opId?: string }): Promise<void> {
   const AU = F.auditKep;
   await createRecords(T.auditKep, [
     {
@@ -207,7 +207,7 @@ export async function writeAudit(row: { aksi: string; pelaku: string; targetId: 
       [AU.targetId]: row.targetId,
       ...(row.sebelum !== undefined ? { [AU.sebelum]: row.sebelum } : {}),
       ...(row.sesudah !== undefined ? { [AU.sesudah]: row.sesudah } : {}),
-      [AU.opId]: randomUUID(),
+      [AU.opId]: row.opId ?? randomUUID(),
     },
   ]);
 }

@@ -111,7 +111,7 @@ export const F = {
     agenda: "fld6n7fszdA2YmmzM",
     acara: "fldG03oIWIqrUgGLX",
     urutan: "fldaZPMpQnLjHh5wZ",
-    tanggal: "fldUjbwLw0J6tMF0h",
+    tanggal: "fldUjbwLw0J6tMF0h", // type: date (YYYY-MM-DD, no time; verified live), compared as a WIB calendar date
     jamMulai: "fld5KQvsCHytRZKGQ",
     jamSelesai: "fldSUdoLGXbHVAhCe",
     pengajar: "fldM6XcvHnkLk8Pf1",

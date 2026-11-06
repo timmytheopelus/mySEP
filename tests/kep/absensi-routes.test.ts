@@ -93,7 +93,7 @@ describe("attendance routes", () => {
   });
   it("semua, mundur, penetapan", async () => {
     const s = await call(semuaRoute, { opId: "op-route-0002" }, { params: sp, as: pic });
-    expect(await s.json()).toEqual({ updated: 1 });
+    expect(await s.json()).toEqual({ updated: 1, remaining: 0 });
     expect((await call(hasilRoute, { hasil: "LULUS", opId: "op-route-0003" }, { params: pp, as: pic })).status).toBe(200);
     expect(store[T.pendaftaranEvents][0].fields[P.keterangan]).toBe("LULUS");
     expect((await call(hasilRoute, { hasil: "NAIK", opId: "op-route-0003" }, { params: pp, as: pic })).status).toBe(422);

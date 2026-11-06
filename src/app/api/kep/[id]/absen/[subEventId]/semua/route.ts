@@ -6,7 +6,7 @@ import { setSemuaHadir } from "@/lib/kep/absensi";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 const Body = z.object({ opId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) }).strict();
 

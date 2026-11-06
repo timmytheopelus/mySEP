@@ -2,12 +2,12 @@ import { z } from "zod";
 import { withAuth } from "@/lib/auth/guard";
 import { json, readBody, tooMany } from "@/lib/http/auth-http";
 import { HttpError } from "@/lib/http/errors";
-import { mundurkanPeserta } from "@/lib/kep/absensi";
+import { batalkanMundur, mundurkanPeserta } from "@/lib/kep/absensi";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
 
-const Body = z.object({ opId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) }).strict();
+const Body = z.object({ opId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/), batal: z.literal(true).optional() }).strict();
 
 export const POST = withAuth<{ id: string; pid: string }>(
   async (req, { session, params }) => {
@@ -15,7 +15,8 @@ export const POST = withAuth<{ id: string; pid: string }>(
     if (!lim.ok) return tooMany(lim.retryAfter);
     const parsed = Body.safeParse(await readBody(req));
     if (!parsed.success) throw new HttpError(422, "Data tidak valid");
-    await mundurkanPeserta(session, params.id, params.pid, parsed.data.opId);
+    if (parsed.data.batal) await batalkanMundur(session, params.id, params.pid, parsed.data.opId);
+    else await mundurkanPeserta(session, params.id, params.pid, parsed.data.opId);
     return json({ ok: true });
   },
   { roles: ["PIC", "ADMIN"] },
