@@ -26,6 +26,14 @@ export const EVENT_ID_FIELD = "fldhpu7dbyYUETwuY";
 // (verified live: it is the only choice).
 export const PENGAJAR_STATUS_AKTIF = "Aktif";
 
+// Data Pengajar KEP fields that are READ ONLY for the app (deliberately outside F so they never enter a write
+// allowlist). noHp is SENSITIVE: request it only in a dedicated single-record read for an authorized viewer.
+export const PENGAJAR_READ = {
+  noHp: "fldF6kmbcQpu0S8xq",
+  bab: "fldPkNCOvkAMeamXY", // link to BabKEP
+  subEvent: "fldvKXMt3yunX41DJ", // link to SubEvent (inverse of SubEvent.Pengajar)
+} as const;
+
 export const SEL = {
   kelompokAcaraKep: "sel89ZKeY5BWQgaTL",
 } as const;
@@ -86,6 +94,9 @@ export const F = {
     photo: "fldu2pMyDKF9bMTiF",
     linkYoutube: "fld8hjcXk5yxWO31p",
     bioSingkat: "fldVMLPJuzL8673mZ",
+  },
+  babKep: {
+    bab: "fldXsQ5MvJsUpVMYd", // singleSelect "Bab" name (read only; table is not in ALLOWED)
   },
   subEvent: {
     agenda: "fld6n7fszdA2YmmzM",
@@ -149,7 +160,8 @@ export const ALLOWED: Record<string, Set<string>> = {
   [T.teamUmat]: setOf(F.teamUmat),
   [T.eventKep]: without(F.eventKep, RESTRICTED[T.eventKep]),
   [T.penyelenggaraKep]: without(F.penyelenggaraKep, RESTRICTED[T.penyelenggaraKep]),
-  [T.pengajarKep]: setOf(F.pengajarKep),
+  // Only the SEP-editable profile fields are writable; name, status, photo, links and NoHP never are.
+  [T.pengajarKep]: new Set<string>([F.pengajarKep.linkYoutube, F.pengajarKep.bioSingkat]),
   [T.subEvent]: setOf(F.subEvent),
   [T.akunKep]: setOf(F.akunKep),
   [T.auditKep]: setOf(F.auditKep),
