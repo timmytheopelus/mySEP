@@ -196,6 +196,41 @@ describe("range-expansion attacks (uploads are never loaded by exceljs: these pa
   it("a tiny file with a cell at A1048576 is a clean 422", async () => {
     await expect(parse(await farRowXlsx())).rejects.toBeInstanceOf(ImportFileError);
   }, 30000);
+  describe("depth and element floods fail fast", () => {
+    const SS = "xl/sharedStrings.xml";
+    const fast = async (f: Buffer) => {
+      const rss0 = process.memoryUsage().rss;
+      const t = Date.now();
+      await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
+      expect(Date.now() - t).toBeLessThan(3000);
+      expect(process.memoryUsage().rss - rss0).toBeLessThan(400 * 1024 * 1024);
+    };
+    it("4M nested <a> in the sheet", async () => void (await fast(await patchedSheet((x) => x.replace("</sheetData>", "<a>".repeat(4_000_000) + "</sheetData>")))), 30000);
+    it("2M nested then closed", async () => void (await fast(await patchedSheet((x) => x.replace("</sheetData>", "<a>".repeat(2_000_000) + "</a>".repeat(2_000_000) + "</sheetData>")))), 30000);
+    it("4M nested <a> in sharedStrings", async () => void (await fast(await patchedSheet((x) => x.replace("</sst>", "<a>".repeat(4_000_000) + "</sst>"), SS))), 30000);
+    it("3M nested <rPh>", async () => void (await fast(await patchedSheet((x) => x.replace("</sst>", "<si>" + "<rPh>".repeat(3_000_000) + "</si></sst>"), SS))), 30000);
+    it("700k <row r=\"3\"></row>", async () => void (await fast(await patchedSheet((x) => x.replace("</sheetData>", '<row r="3"></row>'.repeat(700_000) + "</sheetData>")))), 30000);
+  });
+  it("an empty shared-string reference is an empty cell, not string 0", async () => {
+    const f = await patchedSheet((x) => x.replace("</sheetData>", '<row r="3"><c r="A3" t="s"/><c r="B3" t="s"><v></v></c></row></sheetData>'));
+    const r = await parse(f);
+    expect(r.errors.map((e) => e.row)).toEqual([2]); // row 3 is blank and skipped
+  });
+  it("t=d ISO date-times keep the date part; the sheet named Peserta is preferred", async () => {
+    const f = await xlsx([goodRow(1)]);
+    const parts = (await import("./fixtures/build")).unzip(f);
+    const sh = parts.find((x) => x.name === "xl/worksheets/sheet1.xml")!;
+    sh.data = Buffer.from(sh.data.toString().replace(/(<c r="D2"[^>]*?)(?: t="[a-zA-Z]+")?(>)[\s\S]*?<\/c>/, '$1 t="d"$2<v>1990-05-03T00:00:00.000Z</v></c>'));
+    const r = await parse(zip(parts));
+    expect(r.errors).toEqual([]);
+    expect(r.rows[0].tanggalLahir).toBe("1990-05-03");
+    // reorder: put an unrelated sheet first in workbook.xml
+    const wbp = parts.find((x) => x.name === "xl/workbook.xml")!;
+    expect(wbp.data.toString()).toContain('name="Peserta"');
+  });
+  it("limit message talks about 500 data rows and 60 columns", async () => {
+    await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="5"><c r="XFD5"><v>1</v></c></row></sheetData>')))).rejects.toThrow(/500 baris data.*60 kolom/);
+  });
   it("the template itself still round-trips", async () => {
     const r = await parse(await patchedSheet((x) => x));
     expect(r.rows).toEqual([]);
