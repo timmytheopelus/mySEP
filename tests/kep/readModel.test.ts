@@ -332,7 +332,7 @@ describe("fix round 1: cold-read load", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const real = fakeClientModule().listRecords;
-    vi.mocked(listRecords).mockImplementation(async (t, o) => { const out = await real(t, o); if (t === T.events) await gate; return out; });
+    vi.mocked(listRecords).mockImplementation(async (t) => { const out = await real(t); if (t === T.events) await gate; return out; });
     try {
       const p1 = listKepEvents({ parokiId: "ALL" });
       await new Promise((r) => setTimeout(r, 5));

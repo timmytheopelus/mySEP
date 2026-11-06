@@ -18,6 +18,10 @@ export const T = {
   auditKep: "tblyZWZEDw8woCjQ7",
 } as const;
 
+// Primary field of Events (formula "EventID", date prefix + name). Read-only; deliberately NOT in F.events so
+// it never enters the write allowlist.
+export const EVENT_ID_FIELD = "fldhpu7dbyYUETwuY";
+
 export const SEL = {
   kelompokAcaraKep: "sel89ZKeY5BWQgaTL",
 } as const;

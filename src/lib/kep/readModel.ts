@@ -1,39 +1,62 @@
 import "server-only";
 import { listRecords, type AtRecord } from "@/lib/airtable/client";
-import { F, T } from "@/lib/airtable/schema";
-import { assertKepInScope, scopeFilter } from "@/lib/auth/guard";
+import { EVENT_ID_FIELD, F, T } from "@/lib/airtable/schema";
+import { assertKepInScope, parokiAllows, scopeFilter } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 
 // ---------------------------------------------------------------------------------------------
-// Short-lived per-process table cache. Whole-table reads (paginated by the client) are shared by
-// concurrent and consecutive requests; in-flight reads are shared (no stampede). Writes call
-// invalidateKepCache(table). Returned arrays are shared: treat them as read-only.
+// Short-lived per-process table cache. Concurrent callers share one in-flight read (single flight);
+// a failed refresh serves the last good rows and backs off for a few seconds (cold failure: rethrows,
+// also backed off); invalidateKepCache bumps a generation so an older in-flight read can neither be
+// served as fresh nor stored over the invalidation. Returned arrays are shared: treat as read-only.
 // ---------------------------------------------------------------------------------------------
 const TABLE_TTL_MS = 45_000;
 const PUBLIC_TTL_MS = 10 * 60_000;
+const FAIL_BACKOFF_MS = 10_000;
 
-type Entry = { at: number; p: Promise<AtRecord[]> };
+let generation = 0; // any invalidation (public stats)
+const tableGen = new Map<string, number>();
+const genOf = (t: string) => tableGen.get(t) ?? 0;
+type Entry = { at: number; gen: number; p: Promise<AtRecord[]>; failedAt?: number };
 const tableCache = new Map<string, Entry>();
+const lastGood = new Map<string, AtRecord[]>();
 
-function cached(table: string, fields: string[]): Promise<AtRecord[]> {
-  const key = `${table}|${[...new Set(fields)].sort().join(",")}`;
+function cached(table: string, fields: string[], filterByFormula?: string): Promise<AtRecord[]> {
+  const fl = [...new Set(fields)];
+  const key = `${table}|${fl.sort().join(",")}|${filterByFormula ?? ""}`;
   const hit = tableCache.get(key);
-  if (hit && Date.now() - hit.at < TABLE_TTL_MS) return hit.p;
-  const p = listRecords(table, { fields: [...new Set(fields)] });
-  const entry = { at: Date.now(), p };
+  const now = Date.now();
+  if (hit && hit.gen === genOf(table)) {
+    if (hit.failedAt === undefined && now - hit.at < TABLE_TTL_MS) return hit.p;
+    if (hit.failedAt !== undefined && now - hit.failedAt < FAIL_BACKOFF_MS) return hit.p;
+  }
+  const gen = genOf(table);
+  const entry: Entry = { at: now, gen, p: Promise.resolve([]) };
+  entry.p = listRecords(table, { fields: fl, ...(filterByFormula ? { filterByFormula } : {}) }).then(
+    (rows) => {
+      if (gen === genOf(table)) lastGood.set(key, rows);
+      return rows;
+    },
+    (err) => {
+      entry.failedAt = Date.now();
+      const stale = lastGood.get(key);
+      if (stale) return stale;
+      throw err; // rejected promise stays cached during the backoff window
+    },
+  );
+  entry.p.catch(() => undefined);
   tableCache.set(key, entry);
-  p.catch(() => {
-    if (tableCache.get(key) === entry) tableCache.delete(key); // never cache failures
-  });
-  return p;
+  return entry.p;
 }
 
 /** Call after any write to `table` (or without argument to drop everything). */
 export function invalidateKepCache(table?: string): void {
+  generation++;
+  if (table) tableGen.set(table, genOf(table) + 1);
+  else for (const t of Object.values(T)) tableGen.set(t, genOf(t) + 1);
   for (const k of [...tableCache.keys()]) if (!table || k.startsWith(`${table}|`)) tableCache.delete(k);
-  if (!table || table === T.pendaftaranEvents || table === T.events || table === T.eventKep || table === T.teamUmat) {
-    if (pub) pub.at = 0; // keep the value as stale fallback, force refresh on next call
-  }
+  for (const k of [...lastGood.keys()]) if (!table || k.startsWith(`${table}|`)) lastGood.delete(k);
+  if (pub) pub.at = 0; // value kept as stale fallback; next call recomputes
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -70,28 +93,55 @@ const parseAngkatan = (name: string): number | null => {
 const parishFromName = (name: string) =>
   name.replace(/^\s*KEP\s+PAROKI\s*/i, "").replace(/angkatan\s*\d*/i, "").replace(/[^a-z0-9]+/gi, " ").trim().toLowerCase();
 
-/** Union-find over team members that share a normalized WA number or email. */
-function personResolver(people: AtRecord[]) {
-  const parent = new Map<string, string>();
-  const find = (x: string): string => {
-    let r = x;
-    while ((parent.get(r) ?? r) !== r) r = parent.get(r)!;
-    parent.set(x, r);
-    return r;
-  };
-  const union = (a: string, b: string) => {
-    const ra = find(a), rb = find(b);
-    if (ra !== rb) parent.set(ra, rb);
-  };
+// ---------------------------------------------------------------------------------------------
+// Person identity. Two registrations are "the same person" only if they share a usable phone OR email AND
+// the names are similar. Compared pairwise against the first (primary) row of a cluster, never transitively.
+// A phone/email shared by more than 3 different names is a placeholder/office number and is ignored.
+// ---------------------------------------------------------------------------------------------
+const TITLES = new Set(["bpk", "bapak", "pak", "ibu", "bu", "sdr", "sdri", "dr", "st", "fr", "rm", "sr"]);
+const nameTokens = (v: unknown): string[] =>
+  str(v).toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter((t) => t && !TITLES.has(t));
+
+function similarNames(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0 || a[0] !== b[0]) return false;
+  if (a.length === 1 || b.length === 1) return true;
+  const ra = a.slice(1), rb = b.slice(1);
+  return ra.some((x) => rb.some((y) => x === y || (x.length === 1 && y.startsWith(x)) || (y.length === 1 && x.startsWith(y))));
+}
+
+type Identity = { cluster: (rows: AtRecord[]) => AtRecord[][] };
+function identity(people: AtRecord[]): Identity {
   const U = F.teamUmat;
+  const info = new Map<string, { tokens: string[]; keys: string[] }>();
+  const namesOfKey = new Map<string, Set<string>>();
   for (const p of people) {
-    const keys = [normPhone(p.fields[U.noWhatsapp]), normEmail(p.fields[U.email])];
-    if (keys[0]) union(`t:${p.id}`, `p:${keys[0]}`);
-    if (keys[1]) union(`t:${p.id}`, `e:${keys[1]}`);
+    const tokens = nameTokens(p.fields[U.namaLengkap]);
+    const keys = [normPhone(p.fields[U.noWhatsapp]) && `p:${normPhone(p.fields[U.noWhatsapp])}`, normEmail(p.fields[U.email]) && `e:${normEmail(p.fields[U.email])}`].filter(
+      (k): k is string => !!k,
+    );
+    info.set(p.id, { tokens, keys });
+    for (const k of keys) (namesOfKey.get(k) ?? namesOfKey.set(k, new Set()).get(k)!).add(tokens.join(" "));
   }
-  return (pendaftaran: AtRecord): string => {
-    const t = ids(pendaftaran.fields[F.pendaftaranEvents.teamUmat])[0];
-    return find(t ? `t:${t}` : `r:${pendaftaran.id}`);
+  const usable = (k: string) => (namesOfKey.get(k)?.size ?? 0) <= 3;
+  const tidOf = (r: AtRecord) => ids(r.fields[F.pendaftaranEvents.teamUmat])[0];
+  const same = (a: AtRecord, b: AtRecord): boolean => {
+    const ta = tidOf(a), tb = tidOf(b);
+    if (!ta || !tb) return false;
+    if (ta === tb) return true;
+    const ia = info.get(ta), ib = info.get(tb);
+    if (!ia || !ib) return false;
+    return ia.keys.some((k) => usable(k) && ib.keys.includes(k)) && similarNames(ia.tokens, ib.tokens);
+  };
+  return {
+    cluster(rows) {
+      const out: AtRecord[][] = [];
+      for (const r of [...rows].sort((x, y) => x.id.localeCompare(y.id))) {
+        const c = out.find((g) => same(g[0], r));
+        if (c) c.push(r);
+        else out.push([r]);
+      }
+      return out;
+    },
   };
 }
 
@@ -118,7 +168,12 @@ const toKepEvent = (c: KepEvent): KepEvent => ({
   status: c.status,
   pesertaCount: c.pesertaCount,
 });
-type Course = KepEvent & { parokiIds: string[]; memberEventIds: string[] };
+type Course = KepEvent & {
+  /** Organizer parish ids per linked EventKEP (a KEP without organizer is an empty list). */
+  kepParokis: string[][];
+  linkedKepIds: string[];
+  memberEventIds: string[];
+};
 
 const PEND_CORE = [
   F.pendaftaranEvents.event,
@@ -133,51 +188,62 @@ const HEALTH = [
   F.pendaftaranEvents.obatRutin,
   F.pendaftaranEvents.kontakDarurat,
 ];
-const PEOPLE_CONTACT = [F.teamUmat.noWhatsapp, F.teamUmat.email];
 const STATUS_OK = new Set(["Diajukan", "Disetujui", "Ditolak"]);
 const INACTIVE = new Set(["batal", "dobel daftar"]);
+const isInactive = (r: AtRecord) => INACTIVE.has(str(r.fields[F.pendaftaranEvents.statusPendaftaran]).toLowerCase());
+const isPanitia = (r: AtRecord) => str(r.fields[F.pendaftaranEvents.kategoriKepesertaan]).toLowerCase() === "panitia";
 
-type Data = { pend: AtRecord[]; people: AtRecord[]; courses: Course[]; personOf: (p: AtRecord) => string };
+/** Formula string literal: backslash and double quote escaped. Only ever fed Airtable-sourced constants. */
+const fstr = (v: string) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+const EVENT_CHUNK = 15;
+const normParish = (s: string) => s.toLowerCase().replace(/\bparoki\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+
+type Data = { pendByEvent: Map<string, AtRecord[]>; people: AtRecord[]; courses: Course[]; ident: Identity };
 
 async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {}): Promise<Data> {
-  const [events, keps, orgs, paroki, pend, people] = await Promise.all([
-    cached(T.events, [F.events.namaAcara, F.events.tanggalAcara, F.events.kelompokAcara]),
+  const [events, keps, orgs, paroki, people] = await Promise.all([
+    // only Kelompok Acara = KEP (exact select choice; "KEP Exe" etc. excluded again in code)
+    cached(T.events, [F.events.namaAcara, F.events.tanggalAcara, F.events.kelompokAcara, EVENT_ID_FIELD], `{${F.events.kelompokAcara}}='KEP'`),
     cached(T.eventKep, [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan]),
     cached(T.penyelenggaraKep, [F.penyelenggaraKep.paroki]),
     cached(T.paroki, [F.paroki.nama]),
-    cached(T.pendaftaranEvents, [...PEND_CORE, ...(opts.pendFields ?? [])]),
-    cached(T.teamUmat, [...PEOPLE_CONTACT, ...(opts.peopleFields ?? [])]),
+    cached(T.teamUmat, [F.teamUmat.noWhatsapp, F.teamUmat.email, F.teamUmat.namaLengkap, ...(opts.peopleFields ?? [])]),
   ]);
-  const personOf = personResolver(people);
   const parokiNama = new Map(paroki.map((p) => [p.id, str(p.fields[F.paroki.nama])]));
   const orgParoki = new Map(orgs.map((o) => [o.id, ids(o.fields[F.penyelenggaraKep.paroki])]));
+  const parokiByName = new Map([...parokiNama].filter(([, n]) => n).map(([id, n]) => [normParish(n), id]));
   const kepsOfEvent = new Map<string, AtRecord[]>();
   for (const k of keps) for (const e of ids(k.fields[F.eventKep.events])) (kepsOfEvent.get(e) ?? kepsOfEvent.set(e, []).get(e)!).push(k);
 
-  // active, distinct people per event
-  const peopleOfEvent = new Map<string, Set<string>>();
-  for (const p of pend) {
-    const f = p.fields;
-    if (str(f[F.pendaftaranEvents.kategoriKepesertaan]).toLowerCase() === "panitia") continue;
-    if (INACTIVE.has(str(f[F.pendaftaranEvents.statusPendaftaran]).toLowerCase())) continue;
-    const who = personOf(p);
-    for (const e of ids(f[F.pendaftaranEvents.event])) (peopleOfEvent.get(e) ?? peopleOfEvent.set(e, new Set()).get(e)!).add(who);
-  }
-
-  const raw: (Course & { key: string; linked: boolean })[] = [];
+  type Raw = Course & { key: string; linked: boolean };
+  const raw: Raw[] = [];
+  const idValues: string[] = [];
+  let missingEventId = false;
   for (const ev of events) {
     const name = str(ev.fields[F.events.namaAcara]);
     if (!strs(ev.fields[F.events.kelompokAcara]).some((g) => g.toUpperCase() === "KEP")) continue;
-    const linkedKeps = kepsOfEvent.get(ev.id) ?? [];
+    const linkedKeps = (kepsOfEvent.get(ev.id) ?? []).sort((a, b) => a.id.localeCompare(b.id));
     const linked = linkedKeps.length > 0;
     if (!(linked || (COURSE_NAME.test(name) && !NOT_COURSE.test(name)))) continue;
+    const eid = str(ev.fields[EVENT_ID_FIELD]);
+    if (eid) idValues.push(eid);
+    else missingEventId = true;
 
-    const parokiIds = [...new Set(linkedKeps.flatMap((k) => ids(k.fields[F.eventKep.penyelenggara])).flatMap((o) => orgParoki.get(o) ?? []))].filter(
-      (id) => parokiNama.get(id),
-    );
-    const status = linkedKeps.map((k) => str(k.fields[F.eventKep.statusPersetujuan])).find((s) => STATUS_OK.has(s));
+    const kepParokis = linkedKeps.map((k) => ids(k.fields[F.eventKep.penyelenggara]).flatMap((o) => orgParoki.get(o) ?? []));
+    // display paroki: only when every linked KEP names a (named) paroki in common; otherwise unmapped
+    const named = (l: string[]) => l.filter((id) => parokiNama.get(id));
+    const common = kepParokis.length ? named(kepParokis[0]).filter((id) => kepParokis.every((l) => l.includes(id))) : [];
+    const parokiId = [...new Set(common)].sort()[0] ?? null;
+    const sts = linkedKeps.map((k) => str(k.fields[F.eventKep.statusPersetujuan]));
+    const status: KepEvent["status"] = !linked
+      ? "Lama"
+      : sts.includes("Ditolak")
+        ? "Ditolak"
+        : sts.every((x) => x === "Disetujui")
+          ? "Disetujui"
+          : "Diajukan"; // linked but empty/unknown status: pending, never public
     const angkatan = parseAngkatan(name);
-    const parokiId = parokiIds[0] ?? null;
+    const byName = parokiByName.get(parishFromName(name));
     raw.push({
       eventId: ev.id,
       eventKepId: linkedKeps[0]?.id ?? null,
@@ -185,17 +251,41 @@ async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {
       parokiNama: parokiId ? parokiNama.get(parokiId)! : UNMAPPED,
       angkatan,
       tanggalMulai: str(ev.fields[F.events.tanggalAcara]) || null,
-      status: (status as KepEvent["status"]) ?? "Lama",
-      pesertaCount: peopleOfEvent.get(ev.id)?.size ?? 0,
-      parokiIds,
+      status,
+      pesertaCount: 0,
+      kepParokis,
+      linkedKepIds: linkedKeps.map((k) => k.id),
       memberEventIds: [ev.id],
       linked,
-      key: angkatan == null ? `ev:${ev.id}` : `${parokiId ?? `u:${parishFromName(name)}`}|${angkatan}`,
+      key: angkatan == null ? `ev:${ev.id}` : `${parokiId ?? (byName ? byName : `u:${parishFromName(name)}`)}|${angkatan}`,
     });
   }
 
+  // Registrations only for the course events: filter by EventID text in the (link) primary values, chunked.
+  const pendFields = [...PEND_CORE, ...(opts.pendFields ?? [])];
+  const pendRows = missingEventId || idValues.length === 0
+    ? idValues.length === 0 && !missingEventId ? [] : await cached(T.pendaftaranEvents, pendFields)
+    : (
+        await Promise.all(
+          Array.from({ length: Math.ceil(idValues.length / EVENT_CHUNK) }, (_, i) => {
+            const part = idValues.slice(i * EVENT_CHUNK, (i + 1) * EVENT_CHUNK);
+            const f = `OR(${part.map((v) => `FIND(${fstr(v)},ARRAYJOIN({${F.pendaftaranEvents.event}}))>0`).join(",")})`;
+            return cached(T.pendaftaranEvents, pendFields, f);
+          }),
+        )
+      ).flat();
+  const ident = identity(people);
+  const pendByEvent = new Map<string, AtRecord[]>();
+  const seen = new Set<string>();
+  for (const p of pendRows) {
+    if (seen.has(p.id)) continue; // chunks overlap (substring matches)
+    seen.add(p.id);
+    for (const e of ids(p.fields[F.pendaftaranEvents.event])) (pendByEvent.get(e) ?? pendByEvent.set(e, []).get(e)!).push(p);
+  }
+  for (const c of raw) c.pesertaCount = ident.cluster((pendByEvent.get(c.eventId) ?? []).filter((r) => !isPanitia(r) && !isInactive(r))).length;
+
   // legacy duplicates (same paroki + angkatan): keep the entry with the most pendaftar
-  const groups = new Map<string, typeof raw>();
+  const groups = new Map<string, Raw[]>();
   for (const c of raw) (groups.get(c.key) ?? groups.set(c.key, []).get(c.key)!).push(c);
   const courses: Course[] = [...groups.values()].map((g) => {
     const best = [...g].sort(
@@ -203,7 +293,8 @@ async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {
     )[0];
     return {
       ...toKepEvent(best),
-      parokiIds: best.parokiIds,
+      kepParokis: best.kepParokis,
+      linkedKepIds: [...new Set(g.flatMap((x) => x.linkedKepIds))].sort(),
       memberEventIds: g.map((x) => x.eventId),
     };
   });
@@ -213,18 +304,20 @@ async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {
       a.parokiNama.localeCompare(b.parokiNama) ||
       (a.angkatan ?? 0) - (b.angkatan ?? 0),
   );
-  return { pend, people, courses, personOf };
+  return { pendByEvent, people, courses, ident };
 }
 
-const inParoki = (c: Course, parokiId: string | "ALL") => parokiId === "ALL" || c.parokiIds.includes(parokiId);
+/** Same rule as the Task 7 guard: ALL scope sees everything; a paroki needs EVERY linked KEP to list it (none organizer-less). */
+const courseInScope = (c: Course, parokiId: string | "ALL") =>
+  parokiId === "ALL" || (c.kepParokis.length > 0 && c.kepParokis.every((l) => parokiAllows(parokiId, l)));
 
 /**
  * Course events only (Kelompok Acara KEP and name "KEP PAROKI ..." or linked to an EventKEP), duplicates of
- * paroki+angkatan merged, rows without paroki under "Belum terpetakan" (visible to scope ALL only).
+ * paroki+angkatan merged, rows without a single clear paroki under "Belum terpetakan" (scope ALL only).
  */
 export async function listKepEvents(scope: { parokiId: string | "ALL" }): Promise<KepEvent[]> {
   const { courses } = await load();
-  return courses.filter((c) => inParoki(c, scope.parokiId)).map(toKepEvent);
+  return courses.filter((c) => courseInScope(c, scope.parokiId)).map(toKepEvent);
 }
 
 export type PesertaView = {
@@ -239,35 +332,40 @@ export type PesertaView = {
   statusPendaftaran: string;
   kategori: string;
   keterangan: string;
-  /** Present only for PIC/ADMIN of the owning paroki. Key is absent for SEP. */
+  /** Same person probably registered twice in this event (shared phone/email and similar name). Never dropped. */
+  kemungkinanGanda: boolean;
+  /** Present only for PIC/ADMIN whose paroki owns the event. Key is absent for SEP. */
   kesehatan?: { riwayatPenyakit: string; riwayatAlergi: string; obatRutin: string; kontakDarurat: string };
 };
 
 /**
- * Peserta of the KEP events the session may see (Task 7 guards decide the scope). One row per person per
- * event. Health data only for PIC/ADMIN whose paroki owns the event; never for SEP.
+ * Peserta of the KEP events the session may see (Task 7 guards decide the scope). Every registration is
+ * listed; probable duplicates are flagged. Health data only for PIC/ADMIN of the owning paroki; never SEP.
  */
 export async function listPesertaView(session: Session, eventKepId?: string): Promise<PesertaView[]> {
   const sc = scopeFilter(session);
   if (eventKepId) await assertKepInScope(session, eventKepId); // 404 for foreign/unknown
   const withHealth = session.role !== "SEP";
   const U = F.teamUmat, P = F.pendaftaranEvents;
-  const { pend, people, courses, personOf } = await load({
+  const { pendByEvent, people, courses, ident } = await load({
     pendFields: withHealth ? HEALTH : [],
-    peopleFields: [U.namaLengkap, U.namaBaptis, U.jenisKelamin, U.tanggalLahir, U.statusPernikahan],
+    peopleFields: [U.namaBaptis, U.jenisKelamin, U.tanggalLahir, U.statusPernikahan],
   });
-  const person = new Map(people.map((p) => [p.id, p]));
-  const visible = courses.filter(
-    (c) => inParoki(c, sc.parokiId) && (!eventKepId || c.eventKepId === eventKepId),
-  );
-  const out = new Map<string, PesertaView>();
-  for (const c of visible) {
-    const mayReadHealth = withHealth && !!session.parokiId && c.parokiIds.includes(session.parokiId);
-    for (const p of pend) {
-      const evs = ids(p.fields[P.event]);
-      if (!evs.includes(c.eventId)) continue; // the merged duplicate's rows stay out, like its count
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const out: PesertaView[] = [];
+  for (const c of courses) {
+    if (!courseInScope(c, sc.parokiId)) continue;
+    if (eventKepId && !c.linkedKepIds.includes(eventKepId)) continue;
+    const mayReadHealth = withHealth && !!session.parokiId && courseInScope(c, session.parokiId);
+    const rows = pendByEvent.get(c.eventId) ?? [];
+    const dupIds = new Set<string>();
+    for (const kategori of new Set(rows.map((r) => str(r.fields[P.kategoriKepesertaan])))) {
+      for (const g of ident.cluster(rows.filter((r) => str(r.fields[P.kategoriKepesertaan]) === kategori)))
+        if (g.length > 1) g.forEach((r) => dupIds.add(r.id));
+    }
+    for (const p of [...rows].sort((a, b) => a.id.localeCompare(b.id))) {
       const tid = ids(p.fields[P.teamUmat])[0] ?? null;
-      const t = tid ? person.get(tid) : undefined;
+      const t = tid ? byId.get(tid) : undefined;
       const row: PesertaView = {
         pendaftaranId: p.id,
         eventId: c.eventId,
@@ -280,6 +378,7 @@ export async function listPesertaView(session: Session, eventKepId?: string): Pr
         statusPendaftaran: str(p.fields[P.statusPendaftaran]),
         kategori: str(p.fields[P.kategoriKepesertaan]),
         keterangan: str(p.fields[P.keterangan]),
+        kemungkinanGanda: dupIds.has(p.id),
       };
       if (mayReadHealth) {
         row.kesehatan = {
@@ -289,32 +388,37 @@ export async function listPesertaView(session: Session, eventKepId?: string): Pr
           kontakDarurat: str(p.fields[P.kontakDarurat]),
         };
       }
-      const key = `${c.eventId}|${row.kategori}|${personOf(p)}`;
-      const prev = out.get(key);
-      // same person twice in one event: prefer the row that has a Keterangan, then the active one
-      const rank = (r: PesertaView) => Number(!!r.keterangan) * 2 + Number(!INACTIVE.has(r.statusPendaftaran.toLowerCase()));
-      if (!prev || rank(row) > rank(prev)) out.set(key, row);
+      out.push(row);
     }
   }
-  return [...out.values()];
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Public stats: aggregate only, cached, safe to call anonymously
 // ---------------------------------------------------------------------------------------------
-export type PublicStats = { paroki: number; angkatan: number; lulusan: number; daftarParoki: { nama: string; angkatan: number }[] };
-let pub: { at: number; value?: PublicStats; p?: Promise<PublicStats> } | null = null;
+export type PublicStats = {
+  paroki: number;
+  angkatan: number;
+  lulusan: number;
+  /** angkatan = latest angkatan number of that parish; values below 3 are shown as "<3" (small cell). */
+  daftarParoki: { nama: string; angkatan: number | "<3" }[];
+};
+let pub: { at: number; value?: PublicStats; p?: Promise<PublicStats>; failedAt?: number; err?: unknown } | null = null;
 
 async function computePublicStats(): Promise<PublicStats> {
-  const { pend, courses, personOf } = await load();
-  // only approved or legacy courses; unmapped ones count towards angkatan/lulusan but not the paroki list
+  const { pendByEvent, courses, ident } = await load();
+  // only approved or legacy (no EventKEP) courses; unmapped ones count towards angkatan/lulusan but not the paroki list
   const open = courses.filter((c) => c.status === "Disetujui" || c.status === "Lama");
-  const events = new Set(open.flatMap((c) => c.memberEventIds));
-  const lulus = new Set<string>();
-  for (const p of pend) {
-    if (str(p.fields[F.pendaftaranEvents.kategoriKepesertaan]).toLowerCase() !== "peserta") continue;
-    if (str(p.fields[F.pendaftaranEvents.keterangan]).toUpperCase() !== "LULUS") continue;
-    if (ids(p.fields[F.pendaftaranEvents.event]).some((e) => events.has(e))) lulus.add(personOf(p));
+  let lulusan = 0;
+  for (const c of open) {
+    const rows = [...new Map(c.memberEventIds.flatMap((e) => pendByEvent.get(e) ?? []).map((r) => [r.id, r])).values()].filter(
+      (r) =>
+        !isInactive(r) &&
+        str(r.fields[F.pendaftaranEvents.kategoriKepesertaan]).toLowerCase() === "peserta" &&
+        str(r.fields[F.pendaftaranEvents.keterangan]).toUpperCase() === "LULUS",
+    );
+    lulusan += ident.cluster(rows).length; // dedupe inside one course only
   }
   const byParoki = new Map<string, { nama: string; angkatan: number }>();
   for (const c of open) {
@@ -323,31 +427,38 @@ async function computePublicStats(): Promise<PublicStats> {
     cur.angkatan = Math.max(cur.angkatan, c.angkatan ?? 0);
     byParoki.set(c.parokiId, cur);
   }
-  const daftarParoki = [...byParoki.values()].sort((a, b) => a.nama.localeCompare(b.nama));
-  return { paroki: daftarParoki.length, angkatan: open.length, lulusan: lulus.size, daftarParoki };
+  const daftarParoki = [...byParoki.values()]
+    .sort((a, b) => a.nama.localeCompare(b.nama))
+    .map((v) => ({ nama: v.nama, angkatan: v.angkatan < 3 ? ("<3" as const) : v.angkatan }));
+  return { paroki: daftarParoki.length, angkatan: open.length, lulusan, daftarParoki };
 }
 
 /**
- * Landing-page numbers. Only counts and parish names (no person data). Cached 10 minutes in-process with
- * shared in-flight work, and falls back to the last good value if Airtable fails, so anonymous traffic can
- * never turn into Airtable traffic. Wrap the route with `export const revalidate = 300` as well if desired.
+ * Landing-page numbers. Only counts and parish names (no person data). Cached 10 minutes in-process, one
+ * shared in-flight compute, last good value on failure, short failure backoff; an invalidation during a
+ * compute makes that result stale-only (never "fresh").
  */
 export async function publicStats(): Promise<PublicStats> {
   const now = Date.now();
   if (pub?.value && now - pub.at < PUBLIC_TTL_MS) return pub.value;
   if (pub?.p) return pub.p;
+  if (pub?.failedAt !== undefined && now - pub.failedAt < FAIL_BACKOFF_MS) {
+    if (pub.value) return pub.value;
+    throw pub.err;
+  }
+  const gen = generation;
   const stale = pub?.value;
   const p = computePublicStats().then(
     (value) => {
-      pub = { at: Date.now(), value };
+      pub = { at: gen === generation ? Date.now() : 0, value };
       return value;
     },
     (err) => {
-      pub = stale ? { at: now - PUBLIC_TTL_MS + 30_000, value: stale } : null; // retry in 30 s
+      pub = { at: 0, value: stale, failedAt: Date.now(), err };
       if (stale) return stale;
       throw err;
     },
   );
-  pub = { at: pub?.at ?? 0, value: stale, p };
+  pub = { at: 0, value: stale, p };
   return p;
 }

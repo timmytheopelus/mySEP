@@ -47,8 +47,11 @@ async function kepParokiMap(): Promise<{ kep: AtRecord[]; parokiOf: Map<string, 
   return { kep, parokiOf };
 }
 
+/** One scope rule for everybody: ALL sees everything; a paroki sees what lists it as organizer. */
+export const parokiAllows = (scope: string | "ALL", parokis: string[]) => scope === "ALL" || parokis.includes(scope);
+
 const inScope = (s: Session, parokis: string[]) =>
-  s.role === "SEP" || (!!s.parokiId && parokis.includes(s.parokiId));
+  s.role === "SEP" || (!!s.parokiId && parokiAllows(s.parokiId, parokis));
 
 /** SEP: any KEP. PIC/ADMIN: only their paroki. Everything else (missing, foreign, malformed): 404. */
 export async function assertKepInScope(
