@@ -319,6 +319,87 @@ export async function listKepEvents(scope: { parokiId: string | "ALL" }): Promis
   return courses.filter((c) => courseInScope(c, scope.parokiId)).map(toKepEvent);
 }
 
+/** Table read through the shared cache (reports). Read-only, shared arrays. */
+export const readCached = cached;
+/** Bumped by every invalidation: report caches key on it. */
+export const cacheGeneration = () => generation;
+
+export type ReportPeserta = {
+  pendaftaranId: string;
+  /** Internal person key (TeamUmat id, else the registration id); only used to merge, never output. */
+  personKey: string;
+  eventIds: string[];
+  /** Trimmed + uppercased Keterangan. */
+  keterangan: string;
+  hadirIds: string[];
+  jenisKelamin: string;
+  tanggalLahir: string | null;
+  statusPernikahan: string;
+};
+export type ReportCourse = {
+  eventKepId: string | null;
+  linkedKepIds: string[];
+  parokiId: string | null;
+  parokiNama: string;
+  angkatan: number | null;
+  tanggalMulai: string | null;
+  status: KepEvent["status"];
+  /** One entry per person (probable duplicates merged; Panitia, Batal and Dobel daftar excluded). No names, contact or health data. */
+  peserta: ReportPeserta[];
+  /** Every countable registration (not merged), as the absensi sheet lists them. */
+  rows: ReportPeserta[];
+};
+const OUTCOME_RANK: Record<string, number> = { LULUS: 3, "TIDAK LULUS": 2, "MENGUNDURKAN DIRI": 1 };
+
+/**
+ * Courses inside `scope` (same rule as listKepEvents: a paroki needs EVERY linked KEP to list it, the unmapped
+ * bucket is for scope ALL only) with their anonymous peserta rows. Scope is applied here, before any row leaves.
+ */
+export async function loadReportCourses(
+  scope: { parokiId: string | "ALL" },
+  opts: { profile?: boolean; hadir?: boolean } = {},
+): Promise<ReportCourse[]> {
+  const U = F.teamUmat, P = F.pendaftaranEvents;
+  const { pendByEvent, people, courses, ident } = await load({
+    pendFields: opts.hadir ? [P.pertemuanHadir] : [],
+    peopleFields: opts.profile ? [U.jenisKelamin, U.tanggalLahir, U.statusPernikahan] : [],
+  });
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const view = (r: AtRecord): ReportPeserta => {
+    const t = byId.get(ids(r.fields[P.teamUmat])[0] ?? "");
+    return {
+      pendaftaranId: r.id,
+      personKey: ids(r.fields[P.teamUmat])[0] ?? r.id,
+      eventIds: ids(r.fields[P.event]),
+      keterangan: str(r.fields[P.keterangan]).toUpperCase(),
+      hadirIds: ids(r.fields[P.pertemuanHadir]),
+      jenisKelamin: str(t?.fields[U.jenisKelamin]),
+      tanggalLahir: str(t?.fields[U.tanggalLahir]) || null,
+      statusPernikahan: str(t?.fields[U.statusPernikahan]),
+    };
+  };
+  const out: ReportCourse[] = [];
+  for (const c of courses) {
+    if (!courseInScope(c, scope.parokiId)) continue;
+    const all = [...new Map(c.memberEventIds.flatMap((e) => pendByEvent.get(e) ?? []).map((r) => [r.id, r])).values()].filter(
+      (r) => !isInactive(r) && !isPanitia(r),
+    );
+    const peserta = ident.cluster(all).map((g) => view([...g].sort((a, b) => (OUTCOME_RANK[str(b.fields[P.keterangan]).toUpperCase()] ?? 0) - (OUTCOME_RANK[str(a.fields[P.keterangan]).toUpperCase()] ?? 0))[0]));
+    out.push({
+      eventKepId: c.eventKepId,
+      linkedKepIds: c.linkedKepIds,
+      parokiId: c.parokiId,
+      parokiNama: c.parokiNama,
+      angkatan: c.angkatan,
+      tanggalMulai: c.tanggalMulai,
+      status: c.status,
+      peserta,
+      rows: all.map(view),
+    });
+  }
+  return out;
+}
+
 export type PesertaView = {
   pendaftaranId: string;
   eventId: string;

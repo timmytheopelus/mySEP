@@ -77,10 +77,7 @@ beforeEach(async () => {
   store[T.subEvent] = [sub(S1, EV_A1, 1, "2024-03-01"), sub(S2, EV_A1, 2, "2024-03-08"), sub(S3, EV_A1, 3, "2024-03-15", "=HYPERLINK(evil)")];
   store[T.teamUmat] = [];
   store[T.pendaftaranEvents] = [];
-  seedPeserta([
-    ...[1, 2, 3, 4, 5, 6].map((n) => ({ n, ket: "LULUS" })),
-    { n: 1, ket: "LULUS", hadir: [S1, S2] } as Spec, // replaced below (duplicate n removed)
-  ].filter((s, i, a) => a.findIndex((x) => x.n === s.n) === i && s.n !== 1));
+  seedPeserta([2, 3, 4, 5, 6].map((n) => ({ n, ket: "LULUS" })));
   seedPeserta([
     { n: 1, ket: "LULUS", hadir: [S1, S2], jk: "Perempuan", nikah: "Menikah", lahir: `${yr - 35}-01-01` },
     { n: 7, ket: "TIDAK LULUS" },
@@ -186,11 +183,6 @@ describe("kehadiranPerPertemuan", () => {
 
 describe("profilPeserta", () => {
   it("aggregates only, suppresses buckets < 5 and the complementary one", async () => {
-    store[T.teamUmat].forEach((t, i) => {
-      const n = Number(t.id.slice(7));
-      if (n > 40 || n === 0) return;
-      void i;
-    });
     // 13 distinct counted peserta in Pandu (11 in angkatan 1 + 2 in angkatan 2): assign demographics
     const counted = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15];
     counted.forEach((n, i) => {
@@ -263,8 +255,10 @@ describe("GET /api/laporan/[jenis]", () => {
     expect(res.headers.get("content-type")).toMatch(/^text\/csv/);
     expect(res.headers.get("content-disposition")).toBe('attachment; filename="laporan-kehadiran.csv"');
     expect(res.headers.get("cache-control")).toContain("no-store");
+    const bytes = new Uint8Array(await res.clone().arrayBuffer());
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const text = await res.text();
-    expect(text.startsWith("﻿agenda,tanggal,hadir,aktif")).toBe(true);
+    expect(text).toContain("agenda,tanggal,hadir,aktif");
     expect(text).toContain("'=HYPERLINK(evil)");
     for (const leak of ["Rahasia", "0812", "KANKER", "@rahasia"]) expect(text).not.toContain(leak);
     const log = store[T.auditKep].find((r) => r.fields[F.auditKep.aksi] === "laporan_unduh")!;
