@@ -134,31 +134,70 @@ describe("template neutralization", () => {
   });
 });
 
-describe("range-expansion attacks (rejected before exceljs expands anything)", () => {
+describe("range-expansion attacks (uploads are never loaded by exceljs: these parts are simply not read)", () => {
   const strip = (x: string) => x.replace(/<dataValidations[\s\S]*?<\/dataValidations>/, "");
+  const after = (x: string, ins: string) => strip(x).replace("</sheetData>", `</sheetData>${ins}`);
+  const R = "C3:Z400000";
+  const dv = (attrs: string) => `<dataValidations count="1"><dataValidation type="list" allowBlank="1" ${attrs}><formula1>"a,b"</formula1></dataValidation></dataValidations>`;
+  const S = "xl/worksheets/sheet1.xml";
   const cases: [string, (x: string) => string, string?][] = [
-    ["merge A1:XFD1048576", (x) => strip(x).replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>')],
-    ["merge C3:Z400000", (x) => strip(x).replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="C3:Z400000"/></mergeCells>')],
-    ["dataValidation C3:Z400000", (x) => strip(x).replace("</sheetData>", '</sheetData><dataValidations count="1"><dataValidation type="list" allowBlank="1" sqref="C3:Z400000"><formula1>"a,b"</formula1></dataValidation></dataValidations>')],
+    ["merge A1:XFD1048576", (x) => after(x, '<mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>')],
+    ["merge single-quoted", (x) => after(x, `<mergeCells count="1"><mergeCell ref='${R}'/></mergeCells>`)],
+    ["merge prefixed", (x) => after(x, `<x:mergeCells count="1"><x:mergeCell ref='${R}'/></x:mergeCells>`)],
+    ["dataValidation dq", (x) => after(x, dv(`sqref="${R}"`))],
+    ["dataValidation single quote", (x) => after(x, dv(`sqref='${R}'`))],
+    ["dataValidation whitespace", (x) => after(x, dv(`sqref = "${R}"`))],
+    ["dataValidation entity", (x) => after(x, dv(`sqref="&#x43;3:Z400000"`))],
+    ["dataValidation lowercase/absolute/multi", (x) => after(x, dv(`sqref="c3:z400000 $C$3:$Z$400000 A1:B2"`))],
     ["cols max 20000000", (x) => x.replace(/<cols>[\s\S]*?<\/cols>/, '<cols><col min="1" max="20000000" width="9"/></cols>')],
-    ["conditionalFormatting", (x) => x.replace("</sheetData>", '</sheetData><conditionalFormatting sqref="A1:A2"><cfRule type="expression" priority="1"><formula>1</formula></cfRule></conditionalFormatting>')],
+    ["cols single quote and > in attr", (x) => x.replace(/<cols>[\s\S]*?<\/cols>/, `<cols><col min='1' foo=">" max='20000000' width='9'/></cols>`)],
     ["dimension beyond", (x) => x.replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:XFD1048576"/>')],
+    ["autoFilter and ignoredErrors", (x) => after(x, `<autoFilter ref='A1:XFD1048576'/>`).replace("</worksheet>", `<ignoredErrors><ignoredError sqref='A1:XFD1048576'/></ignoredErrors></worksheet>`)],
+    ["definedNames", (x) => x, "xl/workbook.xml"],
+    ["second sheet", (x) => after(x, '<mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>'), "xl/worksheets/sheet2.xml"],
   ];
-  for (const [name, fn] of cases)
-    it(`rejects ${name} quickly`, async () => {
-      const f = await patchedSheet(fn);
+  for (const [name, fn, part] of cases)
+    it(`ignores ${name} quickly and still parses the data`, async () => {
+      const f = await patchedSheet(part === "xl/workbook.xml" ? (x) => x.replace("</sheets>", `</sheets><definedNames><definedName name="zz">Peserta!$C$3:$Z$20000</definedName></definedNames>`) : fn, part ?? S);
       expect(f.length).toBeLessThan(20000);
       const t = Date.now();
-      await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
+      const r = await parse(f);
+      expect(r.errors[0].message).toMatch(/contoh/i); // the template's own example row
       expect(Date.now() - t).toBeLessThan(3000);
     }, 30000);
-  it("rejects the same attack in a second sheet", async () => {
-    const f = await patchedSheet((x) => x.replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>'), "xl/worksheets/sheet2.xml");
-    await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
-  });
-  it("the template itself (3 sheets, its own validations) still round-trips through the checker", async () => {
-    const f = await patchedSheet((x) => x);
+  it("a real Excel-style sheet (merges, cols to 16384, whole-column selection, conditional formatting, definedNames) parses fine and fast", async () => {
+    const f = await patchedSheet((x) =>
+      x
+        .replace(/<cols>[\s\S]*?<\/cols>/, '<cols><col min="1" max="16384" width="9" style="1"/></cols>')
+        .replace(/<sheetView\b([^>]*)\/>/, '<sheetView$1><selection activeCell="A1" sqref="A1:A1048576"/></sheetView>')
+        .replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="A100:B101"/></mergeCells><conditionalFormatting sqref="A1:XFD1048576"><cfRule type="expression" priority="1"><formula>1</formula></cfRule></conditionalFormatting>'),
+    );
+    const t = Date.now();
     const r = await parse(f);
+    expect(r.errors[0].row).toBe(2);
+    expect(Date.now() - t).toBeLessThan(3000);
+  });
+  it("addressless cells (3,000,000 x <c/>) are rejected fast", async () => {
+    const f = await patchedSheet((x) => x.replace("</sheetData>", `<row r="3">${"<c/>".repeat(3_000_000)}</row></sheetData>`));
+    const t = Date.now();
+    await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
+    expect(Date.now() - t).toBeLessThan(3000);
+  }, 30000);
+  it("cells beyond row 600 or column 60 are rejected", async () => {
+    await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="1048576"><c r="A1048576"><v>1</v></c></row></sheetData>')))).rejects.toBeInstanceOf(ImportFileError);
+    await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="5"><c r="XFD5"><v>1</v></c></row></sheetData>')))).rejects.toBeInstanceOf(ImportFileError);
+  });
+  it("spliced / malformed tags make the XML invalid and are rejected", async () => {
+    await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", "</sheetData><merge<drawing/>Cells/>")))).rejects.toBeInstanceOf(ImportFileError);
+  });
+  it("a DOCTYPE / entity declaration is rejected", async () => {
+    await expect(parse(await patchedSheet((x) => `<!DOCTYPE x [<!ENTITY a "bbbb">]>${x}`))).rejects.toBeInstanceOf(ImportFileError);
+  });
+  it("a tiny file with a cell at A1048576 is a clean 422", async () => {
+    await expect(parse(await farRowXlsx())).rejects.toBeInstanceOf(ImportFileError);
+  }, 30000);
+  it("the template itself still round-trips", async () => {
+    const r = await parse(await patchedSheet((x) => x));
     expect(r.rows).toEqual([]);
     expect(r.errors[0].message).toMatch(/contoh/i);
   });
@@ -260,13 +299,6 @@ describe("parseImport", () => {
     await expect(parse(understatedPadded())).rejects.toBeInstanceOf(ImportFileError);
     expect(Date.now() - t).toBeLessThan(3000);
   });
-  it("a tiny file with a cell at A1048576 is a clean 422, not a million-row walk", async () => {
-    const f = await farRowXlsx();
-    expect(f.length).toBeLessThan(20000);
-    const t = Date.now();
-    await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
-    expect(Date.now() - t).toBeLessThan(3000);
-  }, 30000);
   it("rejects more than 500 data rows, accepts exactly 500", async () => {
     const mk = (n: number) => xlsx(Array.from({ length: n }, (_, i) => goodRow(i + 1)));
     await expect(parse(await mk(501))).rejects.toThrow(/500/);

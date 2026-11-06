@@ -1,6 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { crc32, inflateRawSync } from "node:zlib";
+import { inflateRawSync } from "node:zlib";
+import { SaxesParser } from "saxes";
 import ExcelJS from "exceljs";
 import { neutralize } from "@/lib/security/csv";
 import { PesertaInput } from "@/lib/kep/registration";
@@ -105,52 +106,12 @@ const reject = (m: string): never => {
   throw new ImportFileError(m);
 };
 
-/** Little-endian ZIP writer for already-inflated, already-checked entries (stored, honest sizes). */
-function rebuildZip(entries: { name: string; data: Buffer }[]): Buffer {
-  const parts: Buffer[] = [];
-  const central: Buffer[] = [];
-  let off = 0;
-  for (const e of entries) {
-    const name = Buffer.from(e.name, "utf8");
-    const crc = crc32(e.data);
-    const lh = Buffer.alloc(30);
-    lh.writeUInt32LE(0x04034b50, 0);
-    lh.writeUInt16LE(20, 4);
-    lh.writeUInt16LE(0x0800, 6);
-    lh.writeUInt32LE(crc, 14);
-    lh.writeUInt32LE(e.data.length, 18);
-    lh.writeUInt32LE(e.data.length, 22);
-    lh.writeUInt16LE(name.length, 26);
-    const ch = Buffer.alloc(46);
-    ch.writeUInt32LE(0x02014b50, 0);
-    ch.writeUInt16LE(20, 4);
-    ch.writeUInt16LE(20, 6);
-    ch.writeUInt16LE(0x0800, 8);
-    ch.writeUInt32LE(crc, 16);
-    ch.writeUInt32LE(e.data.length, 20);
-    ch.writeUInt32LE(e.data.length, 24);
-    ch.writeUInt16LE(name.length, 28);
-    ch.writeUInt32LE(off, 42);
-    parts.push(lh, name, e.data);
-    central.push(ch, name);
-    off += 30 + name.length + e.data.length;
-  }
-  const cd = Buffer.concat(central);
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(cd.length, 12);
-  end.writeUInt32LE(off, 16);
-  return Buffer.concat([...parts, cd, end]);
-}
-
 /**
- * Validates the archive and returns a rebuilt copy. Declared sizes are never trusted: every entry is inflated here
+ * Validates the archive and returns its checked, inflated entries. Declared sizes are never trusted: every entry is inflated here
  * with a hard output budget, its real length must equal the central-directory size AND the local-header size, and
- * exceljs only ever sees the rebuilt archive made of those checked buffers.
+ * the reader below only ever sees those checked buffers (exceljs is never used to read uploads).
  */
-function checkZip(buf: Buffer): Buffer {
+function checkZip(buf: Buffer): Map<string, Buffer> {
   if (buf.length < 22 || buf.readUInt32LE(0) !== 0x04034b50) reject("Berkas bukan Excel (.xlsx) yang sah");
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
@@ -215,65 +176,153 @@ function checkZip(buf: Buffer): Buffer {
   const ct = ctEntry.data.toString("utf8");
   if (/macroEnabled|vbaProject/i.test(ct)) reject("Berkas berisi makro dan ditolak");
   if (!/spreadsheetml\.sheet\.main/.test(ct)) reject("Berkas bukan Excel (.xlsx) yang sah");
-  const keep = out.filter((e) => KEEP.test(e.name));
-  const sheets = keep.filter((e) => SHEET.test(e.name));
-  if (sheets.length === 0 || sheets.length > MAX_SHEETS) reject("Berkas Excel tidak sesuai template");
-  for (const sh of sheets) sh.data = Buffer.from(scanSheet(sh.data.toString("utf8")));
-  return rebuildZip(keep);
+  return new Map(out.map((e) => [e.name, e.data]));
 }
-
-// Only what the import needs survives; everything else (docProps, drawings, comments, external links, ...) is dropped.
-const KEEP = /^(\[Content_Types\]\.xml|_rels\/\.rels|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/sharedStrings\.xml|xl\/styles\.xml|xl\/worksheets\/sheet\d+\.xml)$/;
-const SHEET = /^xl\/worksheets\/sheet\d+\.xml$/;
-const MAX_SHEETS = 5;
 
 const colNum = (letters: string) => [...letters].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
-function refWithin(ref: string): boolean {
-  for (const tok of ref.split(/[\s:]+/).filter(Boolean)) {
-    const m = /^\$?([A-Z]{1,3})\$?(\d{1,7})$/.exec(tok);
-    if (!m || colNum(m[1]) > MAX_SHEET_COLS || Number(m[2]) > MAX_SHEET_ROWS) return false;
+// ---------------------------------------------------------------------------------------------
+// Minimal streaming reader (saxes). Only rows/cells of the first sheet are looked at; merges, validations, cols,
+// definedNames, styles, other sheets, drawings and hyperlinks are never read. No DTD, no entity expansion.
+// ---------------------------------------------------------------------------------------------
+type Raw = string | number | boolean;
+const MAX_CELLS = 20_000;
+const MAX_CELL_CHARS = 2000;
+const MAX_SHARED = 50_000;
+const local = (n: string) => n.slice(n.lastIndexOf(":") + 1);
+const bad = (m = "Berkas bukan Excel (.xlsx) yang sah") => reject(m);
+
+function sax(xml: string, h: { open?: (name: string, attrs: Record<string, string>) => void; close?: (name: string) => void; text?: (t: string) => void }): void {
+  const p = new SaxesParser({ xmlns: false });
+  p.on("error", () => bad());
+  p.on("doctype", () => bad());
+  p.on("opentag", (t) => h.open?.(local(t.name), t.attributes as Record<string, string>));
+  p.on("closetag", (t) => h.close?.(local(t.name)));
+  p.on("text", (t) => h.text?.(t));
+  try {
+    p.write(xml).close();
+  } catch (e) {
+    if (e instanceof ImportFileError) throw e;
+    bad();
   }
-  return true;
 }
-/** Raw-XML pre-scan (the XML is already budget capped): anything exceljs would EXPAND is refused before it loads. */
-function scanSheet(xml: string): string {
-  const bad = () => reject("Berkas Excel tidak sesuai template (struktur lembar tidak didukung)");
-  if (/<mergeCells\b|<conditionalFormatting\b/.test(xml)) bad();
-  for (const m of xml.matchAll(/\b(?:sqref|ref)="([^"]*)"/g)) if (!refWithin(m[1])) bad();
-  for (const m of xml.matchAll(/<col\b[^>]*>/g)) {
-    const mn = /\bmin="(\d+)"/.exec(m[0]);
-    const mx = /\bmax="(\d+)"/.exec(m[0]);
-    if (!mn || !mx || Number(mn[1]) > MAX_SHEET_COLS || Number(mx[1]) > MAX_SHEET_COLS) bad();
-  }
-  for (const m of xml.matchAll(/<c\s[^>]*?\br="([A-Z]+)(\d+)"/g)) if (colNum(m[1]) > MAX_SHEET_COLS || Number(m[2]) > MAX_SHEET_ROWS) bad();
-  for (const m of xml.matchAll(/<row\s[^>]*?\br="(\d+)"/g)) if (Number(m[1]) > MAX_SHEET_ROWS) bad();
-  // Parts that need relationships we dropped (links, drawings, tables) are removed; the cell text itself stays.
-  return xml.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>|<(?:drawing|legacyDrawing|tableParts|picture)\b[^>]*?(?:\/>|>[\s\S]*?<\/(?:tableParts|drawing|legacyDrawing|picture)>)/g, "");
+
+function sharedStrings(xml: string | undefined): string[] {
+  const out: string[] = [];
+  if (!xml) return out;
+  let cur = "";
+  let inT = false;
+  let skip = 0; // inside <rPh> (phonetic runs)
+  sax(xml, {
+    open(n) {
+      if (n === "si") cur = "";
+      else if (n === "rPh") skip++;
+      else if (n === "t" && !skip) inT = true;
+    },
+    close(n) {
+      if (n === "t") inT = false;
+      else if (n === "rPh") skip--;
+      else if (n === "si") {
+        if (out.length >= MAX_SHARED) bad("Berkas Excel terlalu rumit");
+        out.push(cur);
+      }
+    },
+    text(t) {
+      if (inT && cur.length <= MAX_CELL_CHARS) cur = (cur + t).slice(0, MAX_CELL_CHARS + 1);
+    },
+  });
+  return out;
+}
+
+/** The first sheet listed in workbook.xml, resolved through its relationships. */
+function firstSheetPath(files: Map<string, Buffer>): string {
+  const wbXml = files.get("xl/workbook.xml")?.toString("utf8");
+  const relXml = files.get("xl/_rels/workbook.xml.rels")?.toString("utf8");
+  if (!wbXml || !relXml) return bad();
+  let rid: string | null = null;
+  sax(wbXml, {
+    open(n, a) {
+      if (n === "sheet" && rid === null) rid = a["r:id"] ?? a.id ?? null;
+    },
+  });
+  let target: string | null = null;
+  sax(relXml, {
+    open(n, a) {
+      if (n === "Relationship" && a.Id === rid) target = a.Target ?? null;
+    },
+  });
+  if (!target) return bad();
+  const path = (target as string).startsWith("/") ? (target as string).slice(1) : `xl/${target}`;
+  if (!/^xl\/worksheets\/[A-Za-z0-9_-]+\.xml$/.test(path)) return bad();
+  return path;
+}
+
+function readSheet(files: Map<string, Buffer>): Map<number, Map<number, Raw>> {
+  const sheetXml = files.get(firstSheetPath(files))?.toString("utf8");
+  if (!sheetXml) return bad();
+  const strings = sharedStrings(files.get("xl/sharedStrings.xml")?.toString("utf8"));
+  const rows = new Map<number, Map<number, Raw>>();
+  let cell: { row: number; col: number; t: string; v: string; is: string } | null = null;
+  let cap: "v" | "is" | null = null;
+  let inIs = 0;
+  let count = 0;
+  const add = (c: NonNullable<typeof cell>) => {
+    let val: Raw | null = null;
+    const raw = c.t === "inlineStr" ? c.is : c.v;
+    if (c.t === "s") {
+      const i = Number(raw);
+      if (!Number.isInteger(i) || i < 0 || i >= strings.length) bad();
+      val = strings[i];
+    } else if (c.t === "b") val = raw.trim() === "1";
+    else if (c.t === "e") val = null;
+    else if (c.t === "str" || c.t === "inlineStr" || c.t === "d") val = raw;
+    else if (raw.trim() !== "") {
+      const n = Number(raw);
+      val = Number.isFinite(n) ? n : raw;
+    }
+    if (typeof val === "string" && val.length > MAX_CELL_CHARS) bad(`Teks pada baris ${c.row} terlalu panjang (maksimal ${MAX_CELL_CHARS} karakter)`);
+    if (val === null || val === "") return;
+    let r = rows.get(c.row);
+    if (!r) rows.set(c.row, (r = new Map()));
+    r.set(c.col, val);
+  };
+  sax(sheetXml, {
+    open(n, a) {
+      if (n === "c") {
+        const m = /^([A-Z]{1,3})([1-9]\d{0,6})$/.exec(a.r ?? "");
+        if (!m) bad("Berkas Excel tidak valid: ada sel tanpa alamat yang sah");
+        const col = colNum(m![1]);
+        const row = Number(m![2]);
+        if (col > MAX_SHEET_COLS || row > MAX_SHEET_ROWS) bad(`Data di luar batas lembar (maksimal ${MAX_ROWS} baris dan ${MAX_SHEET_COLS} kolom)`);
+        if (++count > MAX_CELLS) bad("Berkas Excel terlalu rumit (terlalu banyak sel)");
+        cell = { row, col, t: a.t ?? "n", v: "", is: "" };
+      } else if (cell && n === "v") cap = "v";
+      else if (cell && n === "is") inIs++;
+      else if (cell && inIs && n === "t") cap = "is";
+      else if (cell && inIs && n === "rPh") inIs++;
+    },
+    close(n) {
+      if (n === "c" && cell) {
+        add(cell);
+        cell = null;
+      } else if (n === "v" || n === "t") cap = null;
+      else if (n === "is" || n === "rPh") inIs = Math.max(0, inIs - 1);
+    },
+    text(t) {
+      if (!cell || !cap) return;
+      if (cap === "v" && cell.v.length <= MAX_CELL_CHARS) cell.v = (cell.v + t).slice(0, MAX_CELL_CHARS + 1);
+      else if (cap === "is" && inIs === 1 && cell.is.length <= MAX_CELL_CHARS) cell.is = (cell.is + t).slice(0, MAX_CELL_CHARS + 1);
+    },
+  });
+  return rows;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Cell -> plain text
 // ---------------------------------------------------------------------------------------------
-function plain(v: unknown): string | number | boolean | Date | null {
-  if (v === null || v === undefined) return null;
-  if (v instanceof Date || typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
-  if (typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    if ("result" in o && ("formula" in o || "sharedFormula" in o)) return plain(o.result); // text result only, never evaluated
-    if ("formula" in o || "sharedFormula" in o) return null;
-    if (Array.isArray(o.richText)) return o.richText.map((r) => String((r as { text?: unknown }).text ?? "")).join("");
-    if ("text" in o) return plain(o.text); // hyperlink
-    if ("error" in o) return null;
-  }
-  return null;
-}
-const isoDate = (d: Date) => d.toISOString().slice(0, 10);
-
-function cellText(v: unknown, col: Col): string {
-  const x = plain(v);
-  if (x === null) return "";
-  if (x instanceof Date) return Number.isNaN(x.getTime()) ? "" : isoDate(x);
+function cellText(x: Raw | undefined, col: Col): string {
+  if (x === undefined) return "";
   if (typeof x === "number") {
+    if (col === "Tanggal Lahir" && x >= 1 && x < 80000) return isoDate(new Date(Date.UTC(1899, 11, 30) + Math.floor(x) * 86400000)); // Excel serial date
     const s = String(x);
     // Excel drops the leading zero of a phone number typed as a number.
     return PHONE_COLS.includes(col) && /^8\d+$/.test(s) ? `0${s}` : s;
@@ -281,6 +330,7 @@ function cellText(v: unknown, col: Col): string {
   if (typeof x === "boolean") return x ? "ya" : "tidak";
   return x.trim(); // stored as typed; neutralize() is for cells we WRITE into a sheet
 }
+const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
 function normDate(s: string): string {
   const m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(s);
@@ -297,40 +347,27 @@ export type ImportResult = {
 
 export async function parseImport(buf: Buffer, opts: { parokiByName?: Map<string, string> } = {}): Promise<ImportResult> {
   if (buf.length > MAX_FILE_BYTES) throw new ImportFileError("Berkas lebih dari 2 MB", 413);
-  const safe = checkZip(buf);
-  const wb = new ExcelJS.Workbook();
-  try {
-    await wb.xlsx.load(safe as unknown as ArrayBuffer);
-  } catch {
-    return reject("Berkas bukan Excel (.xlsx) yang sah");
-  }
-  const ws = wb.worksheets[0];
-  if (!ws) return { rows: [], items: [], errors: [] };
-  if (ws.rowCount > MAX_SHEET_ROWS || ws.columnCount > MAX_SHEET_COLS) reject(`Lembar terlalu besar. Maksimal ${MAX_ROWS} baris data`);
+  const sheet = readSheet(checkZip(buf));
 
   const colIndex = new Map<Col, number>();
-  const head = ws.getRow(1);
-  head.eachCell({ includeEmpty: false }, (cell, n) => {
-    const t = String(plain(cell.value) ?? "").trim().toLowerCase();
+  for (const [n, v] of sheet.get(1) ?? []) {
+    const t = cellText(v, "Nama Lengkap").toLowerCase();
     const col = COLS.find((c) => c.toLowerCase() === t);
     if (col && !colIndex.has(col)) colIndex.set(col, n);
-  });
+  }
   const missing = COLS.filter((c) => !colIndex.has(c) && !OPTIONAL.includes(c));
-  if (missing.length) reject(`Kolom tidak ditemukan: ${missing.join(", ")}. Gunakan template terbaru.`);
+  if (missing.length) reject(`Kolom tidak ditemukan: ${missing.join(", ")}. Gunakan template terbaru (baris 1 harus berisi judul kolom).`);
 
   const result: ImportResult = { rows: [], items: [], errors: [] };
   let dataRows = 0;
-  const rowNums: number[] = [];
-  ws.eachRow({ includeEmpty: false }, (_row, n) => {
-    if (n >= 2) rowNums.push(n);
-  });
+  const rowNums = [...sheet.keys()].filter((n) => n >= 2).sort((a, b) => a - b);
   for (const r of rowNums) {
-    const row = ws.getRow(r);
+    const row = sheet.get(r)!;
     const cells = {} as Record<Col, string>;
     let any = false;
     for (const c of COLS) {
       const n = colIndex.get(c);
-      cells[c] = n ? cellText(row.getCell(n).value, c) : "";
+      cells[c] = n ? cellText(row.get(n), c) : "";
       if (cells[c]) any = true;
     }
     if (!any) continue;
