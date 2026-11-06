@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import ExcelJS from "exceljs";
 import { EVENT_ID_FIELD, F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
-import { HEADERS, emptyXlsx, goodRow, lyingZip, macroXlsm, validXlsx, vbaInPlainXlsx, xlsx, zip, zipBomb, type Row } from "./fixtures/build";
+import { HEADERS, emptyXlsx, goodRow, lyingZip, macroXlsm, validXlsx, vbaInPlainXlsx, xlsx, zip, zipBomb } from "./fixtures/build";
 
 vi.mock("@/lib/airtable/client", () => fakeClientModule());
 vi.mock("@/lib/kep/readModel", async (orig) => ({ ...(await orig<object>()), invalidateKepCache: vi.fn() }));
@@ -328,21 +328,16 @@ describe("commit route", () => {
   });
   it("a failing row does not stop the batch and is reported without PII", async () => {
     const real = vi.mocked(client.createRecords).getMockImplementation()!;
+    const file = await xlsx([goodRow(1), goodRow(2)]);
+    let failedOnce = false;
     vi.mocked(client.createRecords).mockImplementation(async (t, r, e) => {
-      if (t === T.pendaftaranEvents && JSON.stringify(r).includes("Ana") && (r[0] as Row)[F.pendaftaranEvents.kontakDarurat] === "boom") throw new Error("Airtable request failed: HTTP 500 maria@x");
-      return real(t, r, e);
-    });
-    const file = await xlsx([goodRow(1, { "Kontak Darurat": "boom 0811" }), goodRow(2)]);
-    // make the first row fail by a thrown error from the client
-    vi.mocked(client.createRecords).mockImplementationOnce(real).mockImplementation(async (t, r, e) => {
-      if (t === T.pendaftaranEvents && !(globalThis as { __failed?: boolean }).__failed) {
-        (globalThis as { __failed?: boolean }).__failed = true;
+      if (t === T.pendaftaranEvents && !failedOnce) {
+        failedOnce = true;
         throw new Error("Airtable request failed: HTTP 500 maria@x");
       }
       return real(t, r, e);
     });
     const res = await post(commitRoute, file, { as: PIC_A });
-    delete (globalThis as { __failed?: boolean }).__failed;
     vi.mocked(client.createRecords).mockImplementation(real);
     const b = await res.json();
     expect(b.registered + b.failed).toBe(2);

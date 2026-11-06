@@ -20,9 +20,9 @@ export function tooMany(retryAfter: number): Response {
  * (Sec-Fetch-Site and/or Origin must be present, and any present one must be same-origin).
  * Returns a Response to send back, or null when the request may proceed.
  */
-export function guardPost(req: Request): Response | null {
+export function guardPost(req: Request, opts: { multipart?: boolean } = {}): Response | null {
   const ct = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  if (ct !== "application/json") return json({ error: "Tipe konten tidak didukung" }, 415);
+  if (ct !== (opts.multipart ? "multipart/form-data" : "application/json")) return json({ error: "Tipe konten tidak didukung" }, 415);
   const site = req.headers.get("sec-fetch-site");
   const origin = req.headers.get("origin");
   if (site === null && origin === null) return json({ error: "Permintaan ditolak" }, 403);

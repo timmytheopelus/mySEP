@@ -126,11 +126,11 @@ type Handler<P> = (req: Request, ctx: AuthContext<P>) => Promise<Response> | Res
  * Wraps a Next route handler: CSRF guard for mutating methods, session (sliding renewal re-sets the
  * cookie), role check, then the handler. HttpError becomes a JSON response; anything else a generic 500.
  */
-export function withAuth<P = Record<string, string>>(handler: Handler<P>, opts: { roles: Role[] }) {
+export function withAuth<P = Record<string, string>>(handler: Handler<P>, opts: { roles: Role[]; multipart?: boolean }) {
   return async (req: Request, routeCtx?: { params?: Promise<P> | P }): Promise<Response> => {
     try {
       if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-        const blocked = guardPost(req);
+        const blocked = guardPost(req, { multipart: opts.multipart });
         if (blocked) return blocked;
       }
       const { session, token } = await authenticate(req);
