@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-const MOCK_PORT = 4010;
+import { MOCK_PORT, SESSION_SECRET } from "./tests/e2e/e2e-data";
 // Optional: use a preinstalled browser (sandbox/CI) instead of the one Playwright downloads.
 const executablePath = process.env.PW_CHROMIUM_PATH || undefined;
 const channel = process.env.PW_CHANNEL || undefined;
@@ -30,6 +30,8 @@ export default defineConfig({
         AIRTABLE_API_URL: `http://127.0.0.1:${MOCK_PORT}`,
         AIRTABLE_TOKEN: "e2e-token",
         AIRTABLE_BASE_ID: "appE2E",
+        SESSION_SECRET,
+        ABSEN_RECHECK_MS: "10",
       },
     },
   ],
