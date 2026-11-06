@@ -6,7 +6,7 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 vi.mock("@/lib/kep/readModel", () => ({ invalidateKepCache: vi.fn() }));
 
 import * as client from "@/lib/airtable/client";
-import { batalkanMundur, getAbsenSheet, mundurkanPeserta, setHadir, setSemuaHadir, tetapkanHasil } from "@/lib/kep/absensi";
+import { batalkanMundur, getAbsenSheet, getPenetapanSheet, mundurkanPeserta, setHadir, setSemuaHadir, tetapkanHasil } from "@/lib/kep/absensi";
 import type { Session } from "@/lib/auth/session";
 import { HttpError } from "@/lib/http/errors";
 
@@ -403,5 +403,27 @@ describe("batalkanMundur", () => {
     expect(await status(batalkanMundur(sep, KEP_A, pid(1), op("b")))).toBe(403);
     expect(await status(batalkanMundur(admB, KEP_A, pid(1), op("b")))).toBe(404);
     expect(await status(batalkanMundur(pic, KEP_A, pid(99), op("b")))).toBe(404);
+  });
+});
+
+describe("getPenetapanSheet persen", () => {
+  afterEach(() => vi.useRealTimers());
+  it("attendance % = hadir / pertemuan up to today (WIB), rounded; mundur excluded; no PII beyond nama", async () => {
+    seed(["Agnes", "Bernadus", "Celine"], {
+      1: { [P.pertemuanHadir]: [S1, S2, S3] }, // S3 is in the future: not counted
+      2: { [P.pertemuanHadir]: [S1] },
+      3: { [P.keterangan]: "MENGUNDURKAN DIRI", [P.pertemuanHadir]: [S1] },
+    });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-09T03:00:00Z"));
+    const sh = await getPenetapanSheet(pic, KEP_A);
+    expect(sh.peserta.map((p) => [p.nama, p.persen])).toEqual([["Agnes", 100], ["Bernadus", 50], ["Celine", null]]);
+    expect(Object.keys(sh.peserta[0]).sort()).toEqual(["hasil", "id", "mundur", "nama", "persen"]);
+  });
+  it("persen is null when no pertemuan has happened yet", async () => {
+    seed(["Agnes"]);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-02-01T03:00:00Z"));
+    expect((await getPenetapanSheet(pic, KEP_A)).peserta[0].persen).toBeNull();
   });
 });

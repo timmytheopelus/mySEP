@@ -313,10 +313,12 @@ export async function setSemuaHadir(actor: Session, eventKepId: string, subEvent
 }
 
 /** Latest pertemuan date (YYYY-MM-DD) of the KEP, or null when it has none. */
-async function lastMeetingDate(ctx: Ctx): Promise<string | null> {
+async function meetingsOf(ctx: Ctx): Promise<{ id: string; tanggal: string }[]> {
   const subs = await listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.tanggal] });
-  const dates = subs.filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e))).map((s) => day(s.fields[F.subEvent.tanggal])).filter(Boolean);
-  return dates.sort().at(-1) ?? null;
+  return subs.filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e))).map((s) => ({ id: s.id, tanggal: day(s.fields[F.subEvent.tanggal]) })).filter((m) => m.tanggal);
+}
+async function lastMeetingDate(ctx: Ctx): Promise<string | null> {
+  return (await meetingsOf(ctx)).map((m) => m.tanggal).sort().at(-1) ?? null;
 }
 
 export type Pertemuan = { id: string; agenda: string; tanggal: string; urutan: number };
@@ -333,7 +335,7 @@ export async function listPertemuan(actor: Session, eventKepId: string): Promise
 }
 
 export type PenetapanSheet = {
-  peserta: { id: string; nama: string; hasil: "" | Hasil; mundur: boolean }[];
+  peserta: { id: string; nama: string; hasil: "" | Hasil; mundur: boolean; persen: number | null }[];
   terakhir: string | null;
   today: string;
   terbuka: boolean;
@@ -344,19 +346,23 @@ export async function getPenetapanSheet(actor: Session, eventKepId: string): Pro
   const ctx = await scope(actor, eventKepId);
   const rows = await pesertaRows(actor, ctx);
   const nama = await namesOf(rows.flatMap((r) => ids(r.fields[P.teamUmat]).slice(0, 1)));
+  const today = todayWib();
+  const meetings = await meetingsOf(ctx);
+  const due = new Set(meetings.filter((m) => m.tanggal <= today).map((m) => m.id));
   const peserta = rows
     .map((r) => {
       const k = norm(r.fields[P.keterangan]);
+      const persen = k === MUNDUR || due.size === 0 ? null : Math.round((100 * ids(r.fields[P.pertemuanHadir]).filter((x) => due.has(x)).length) / due.size);
       return {
         id: r.id,
         nama: nama.get(ids(r.fields[P.teamUmat])[0] ?? "") || "(tanpa nama)",
         hasil: (k === "LULUS" || k === "TIDAK LULUS" ? k : "") as "" | Hasil,
         mundur: k === MUNDUR,
+        persen,
       };
     })
     .sort((a, b) => a.nama.localeCompare(b.nama, "id", { sensitivity: "base" }) || a.id.localeCompare(b.id));
-  const terakhir = await lastMeetingDate(ctx);
-  const today = todayWib();
+  const terakhir = meetings.map((m) => m.tanggal).sort().at(-1) ?? null;
   return { peserta, terakhir, today, terbuka: !!terakhir && today >= terakhir };
 }
 

@@ -40,6 +40,11 @@ describe("Content-Security-Policy", () => {
     }
     expect(csp).not.toMatch(/(^|;)\s*img-src[^;]*\*/);
   });
+  it("allows only same-origin workers and manifest", () => {
+    const dir = (n: string) => csp.split(";").map((x) => x.trim()).find((x) => x.startsWith(n));
+    expect(dir("worker-src")).toBe("worker-src 'self'");
+    expect(dir("manifest-src")).toBe("manifest-src 'self'");
+  });
   it("locks down object-src, base-uri, frame-ancestors", () => {
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("base-uri 'self'");

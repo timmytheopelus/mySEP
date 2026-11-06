@@ -9,7 +9,7 @@ vi.mock("idb-keyval", () => ({
   update: async (k: string, fn: (v: unknown) => unknown) => void mem.set(k, fn(mem.get(k))),
 }));
 
-import { clearDead, deadLetters, enqueue, flush, pendingOps, type QueuedOp } from "@/lib/offline/queue";
+import { clearDead, clearOfflineQueue, deadLetters, enqueue, flush, pendingOps, type QueuedOp } from "@/lib/offline/queue";
 
 const op = (n: number): QueuedOp => ({ opId: `op-${String(n).padStart(8, "0")}`, url: `/api/x/${n}`, body: { n } });
 
@@ -99,5 +99,48 @@ describe("offline queue", () => {
     await p;
     expect(seen).toEqual([op(1).opId, op(2).opId]);
     expect(await pendingOps()).toEqual([]);
+  });
+
+  describe("owner scoping", () => {
+    const own = (n: number, owner: string, kepId = "K1"): QueuedOp => ({ ...op(n), owner, kepId });
+
+    it("never sends ops of another owner; they stay parked and are not counted", async () => {
+      await enqueue(own(1, "A"));
+      await enqueue(own(2, "B"));
+      await enqueue(own(3, "A"));
+      const seen: string[] = [];
+      const r = await flush(async (o) => (seen.push(o.opId), true), { owner: "B" });
+      expect(seen).toEqual([op(2).opId]);
+      expect(r).toMatchObject({ sent: 1, pending: 0 });
+      expect((await pendingOps()).map((o) => o.opId)).toEqual([op(1).opId, op(3).opId]);
+      expect(await pendingOps("A")).toHaveLength(2);
+      expect(await pendingOps("B")).toHaveLength(0);
+    });
+
+    it("a network failure for one owner keeps parked ops of the other untouched", async () => {
+      await enqueue(own(1, "A"));
+      await enqueue(own(2, "B"));
+      await flush(async () => false, { owner: "B" });
+      expect((await pendingOps()).map((o) => o.opId)).toEqual([op(1).opId, op(2).opId]);
+    });
+
+    it("dead letters are per owner and clearDead only clears owner+kep", async () => {
+      await enqueue(own(1, "A", "K1"));
+      await enqueue(own(2, "A", "K2"));
+      await flush(async () => 409, { owner: "A" });
+      expect(await deadLetters("B")).toEqual([]);
+      expect(await deadLetters("A")).toHaveLength(2);
+      await clearDead({ owner: "A", kepId: "K1" });
+      expect((await deadLetters("A")).map((d) => d.opId)).toEqual([op(2).opId]);
+    });
+
+    it("clearOfflineQueue wipes queue and dead letters", async () => {
+      await enqueue(own(1, "A"));
+      await enqueue(own(2, "A"));
+      await flush(async (o) => (o.opId === op(1).opId ? 409 : false), { owner: "A" });
+      await clearOfflineQueue();
+      expect(await pendingOps()).toEqual([]);
+      expect(await deadLetters()).toEqual([]);
+    });
   });
 });
