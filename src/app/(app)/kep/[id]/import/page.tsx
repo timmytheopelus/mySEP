@@ -1,14 +1,12 @@
-import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import ImportClient from "./import-client";
 import styles from "../../kep.module.css";
 
 export const metadata = { title: "Impor peserta dari Excel - KEP Keuskupan Bandung" };
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   if (session.role !== "PIC") redirect("/");
   const { id } = await params;
   if (!/^rec[A-Za-z0-9]{10,}$/.test(id)) notFound();

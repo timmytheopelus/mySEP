@@ -95,6 +95,7 @@ export const MATRIX: Entry[] = [
   { route: "laporan/[jenis]", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: true, params: { jenis: "kehadiran" }, query: `kep=${KEP.id}`, rule: "§6 PIC: laporan paroki; SEP: unduh laporan; ADMIN by ruling (OWNER CONFIRMATION pending)" },
   { route: "pewarta/[id]", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: false, params: { id: "recSECPEWARTA0001" }, rule: "§8.7 profil pewarta: hanya setelah login" },
   { route: "pewarta/[id]/foto", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: false, params: { id: "recSECPEWARTA0001" }, rule: "§8.6 foto pewarta: hanya setelah login" },
+  { route: "sesi/ping", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: false, params: {}, rule: "I3 keep-alive: renews the sliding session (8 h cap), any logged-in role" },
   { route: "pewarta/[id]", method: "PATCH", kind: "auth", roles: ["SEP"], kepScoped: false, params: { id: "recSECPEWARTA0001" }, body: { bioSingkat: "Bio uji" }, rule: "§6 SEP: ubah bio/link YouTube pewarta" },
 ];
 

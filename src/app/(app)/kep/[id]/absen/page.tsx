@@ -1,8 +1,8 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import type { Metadata, Viewport } from "next";
-import { readSession, type Session } from "@/lib/auth/session";
+import type { Session } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { HttpError } from "@/lib/http/errors";
 import { getAbsenSheet, listPertemuan } from "@/lib/kep/absensi";
 import AbsenClient from "./_components/AbsenClient";
@@ -13,8 +13,7 @@ export const metadata: Metadata = { title: "Absen peserta - KEP Keuskupan Bandun
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#0b3d91" };
 
 export default async function Page({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ p?: string }> }) {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   if (session.role !== "PIC" && session.role !== "ADMIN") redirect("/");
   const { id } = await params;
   const { p } = await searchParams;

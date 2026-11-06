@@ -1,6 +1,5 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { HttpError } from "@/lib/http/errors";
 import { kepDashboard, profilPeserta, rekapAngkatan, trenTahunan } from "@/lib/kep/reports";
 import { ProfilBagian, Tabel, TrenChart } from "./_components/Charts";
@@ -12,8 +11,7 @@ export const dynamic = "force-dynamic";
 
 /** PIC/ADMIN: only the own paroki (scope comes from the session, never from the URL). SEP goes to its own dashboard. */
 export default async function Page() {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   if (session.role === "SEP") redirect("/dashboard/sep");
   if (!session.parokiId) {
     return (

@@ -1,9 +1,8 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { listRecords } from "@/lib/airtable/client";
+import { cachedList } from "@/lib/airtable/cache";
 import { F, T } from "@/lib/airtable/schema";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { HttpError } from "@/lib/http/errors";
 import { getKepHub, type KepHub } from "@/lib/kep/hub";
 import { getLinkDaftar, type LinkDaftar } from "@/lib/kep/link";
@@ -18,7 +17,7 @@ const tgl = (iso: string | null) =>
   iso ? new Date(`${iso}T00:00:00Z`).toLocaleDateString("id-ID", { timeZone: "UTC", day: "numeric", month: "long", year: "numeric" }) : "-";
 
 async function parokiOptions() {
-  const rows = await listRecords(T.paroki, { fields: [F.paroki.nama] });
+  const rows = await cachedList(T.paroki, [F.paroki.nama]);
   return rows
     .map((p) => ({ id: p.id, nama: String(p.fields[F.paroki.nama] ?? "").trim() }))
     .filter((p) => p.nama)
@@ -26,8 +25,7 @@ async function parokiOptions() {
 }
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   const { id } = await params;
   if (!/^rec[A-Za-z0-9]{10,}$/.test(id)) notFound();
 

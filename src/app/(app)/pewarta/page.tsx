@@ -1,7 +1,5 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { pengalamanPewarta } from "@/lib/pewarta/pengalaman";
 import { filterPewarta, listPewarta } from "@/lib/pewarta/profile";
 import styles from "./pewarta.module.css";
@@ -12,8 +10,7 @@ export const dynamic = "force-dynamic";
 const one = (v: string | string[] | undefined) => (typeof v === "string" ? v.slice(0, 100) : "");
 
 export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   const sp = await searchParams;
   const q = { bab: one(sp.bab), nama: one(sp.nama) };
   const all = await listPewarta(session);

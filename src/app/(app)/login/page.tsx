@@ -9,6 +9,11 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className={styles.main}>
       <h1>Masuk</h1>
+      {q.sesi === "habis" ? (
+        <p role="status" data-testid="sesi-habis">
+          Sesi Anda telah berakhir. Silakan masuk lagi.
+        </p>
+      ) : null}
       <LoginForm initial={{ step, googleError: q.error === "google" }} />
     </main>
   );

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { cookies } from "next/headers";
 import { readSession } from "@/lib/auth/session";
 import AppNav from "./_components/AppNav";
+import SessionKeepAlive from "./_components/SessionKeepAlive";
 
 export const metadata: Metadata = { manifest: "/manifest.webmanifest" };
 
@@ -12,6 +13,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   return (
     <>
       {session ? <AppNav sep={session.role === "SEP"} owner={session.accountId} /> : null}
+      {session ? <SessionKeepAlive /> : null}
       {children}
     </>
   );

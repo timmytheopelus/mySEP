@@ -1,7 +1,5 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { HttpError } from "@/lib/http/errors";
 import { listKepIndex, type KepIndexItem } from "@/lib/kep/hub";
 import styles from "./kep.module.css";
@@ -10,8 +8,7 @@ export const metadata = { title: "Daftar KEP - KEP Keuskupan Bandung" };
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   let items: KepIndexItem[];
   try {
     items = await listKepIndex(session);

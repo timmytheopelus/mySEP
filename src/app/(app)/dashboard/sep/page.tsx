@@ -1,7 +1,6 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { listKepQueue } from "@/lib/kep/approval";
 import { profilPeserta, rekapAngkatan, trenTahunan } from "@/lib/kep/reports";
 import { BarsH, ProfilBagian, Tabel, TrenChart } from "../_components/Charts";
@@ -13,8 +12,7 @@ export const dynamic = "force-dynamic";
 
 /** SEP only: all parishes (incl. the 'Belum terpetakan' bucket), annual trend, approval queue, participant profile. */
 export default async function Page() {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   if (session.role !== "SEP") redirect("/dashboard");
   const all = { parokiId: "ALL" as const };
   let d;

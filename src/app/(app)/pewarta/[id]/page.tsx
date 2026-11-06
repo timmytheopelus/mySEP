@@ -1,7 +1,6 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
+import { pageSession } from "@/lib/auth/page";
 import { HttpError } from "@/lib/http/errors";
 import { getPewarta } from "@/lib/pewarta/profile";
 import { embedUrl } from "@/lib/pewarta/youtube";
@@ -12,8 +11,7 @@ export const metadata = { title: "Profil pewarta - KEP Keuskupan Bandung" };
 export const dynamic = "force-dynamic";
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   const { id } = await params;
   let p;
   try {

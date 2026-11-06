@@ -1,14 +1,12 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import BaruClient from "./baru-client";
 import styles from "../kep.module.css";
 
 export const metadata = { title: "Ajukan KEP baru - KEP Keuskupan Bandung" };
 
 export default async function Page() {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   if (session.role !== "PIC") redirect("/");
   return (
     <main className={styles.main}>

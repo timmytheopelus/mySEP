@@ -1,7 +1,6 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { readSession } from "@/lib/auth/session";
+import { pageSession } from "@/lib/auth/page";
 import { HttpError } from "@/lib/http/errors";
 import { getJadwal, type Jadwal } from "@/lib/kep/jadwal";
 import JadwalClient from "./jadwal-client";
@@ -11,8 +10,7 @@ export const metadata = { title: "Jadwal dan pewarta - KEP Keuskupan Bandung" };
 export const dynamic = "force-dynamic";
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  const session = await readSession((await cookies()).toString());
-  if (!session) redirect("/login");
+  const session = await pageSession();
   const { id } = await params;
   if (!/^rec[A-Za-z0-9]{10,}$/.test(id)) notFound();
   if (session.role !== "PIC" && session.role !== "SEP") redirect(`/kep/${id}`); // Admin Paroki reads the schedule on the detail page
