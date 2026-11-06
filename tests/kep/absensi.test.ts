@@ -6,7 +6,7 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 vi.mock("@/lib/kep/readModel", () => ({ invalidateKepCache: vi.fn() }));
 
 import * as client from "@/lib/airtable/client";
-import { getAbsenSheet, mundurkanPeserta, setHadir, setSemuaHadir, tetapkanHasil } from "@/lib/kep/absensi";
+import { batalkanMundur, getAbsenSheet, mundurkanPeserta, setHadir, setSemuaHadir, tetapkanHasil } from "@/lib/kep/absensi";
 import type { Session } from "@/lib/auth/session";
 import { HttpError } from "@/lib/http/errors";
 
@@ -70,11 +70,15 @@ function seed(names = ["Yohanes", "bernadus", "Agnes", "Celine"], extra: Record<
 }
 
 beforeEach(() => {
+  vi.stubEnv("ABSEN_RECHECK_MS", "0");
   resetStore();
   seed();
   vi.clearAllMocks();
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 describe("getAbsenSheet", () => {
   it("sorts alphabetically (case-insensitive), flags mundur and excludes them from aktifCount", async () => {
@@ -274,5 +278,130 @@ describe("tetapkanHasil", () => {
     expect(await status(tetapkanHasil(pic, KEP_A, pid(99), "LULUS", op("h")))).toBe(404);
     store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Diajukan";
     expect(await status(tetapkanHasil(pic, KEP_A, pid(1), "LULUS", op("h")))).toBe(409);
+  });
+});
+
+describe("round 1 fixes", () => {
+  it("I-1: an opId is bound to its payload (409 on a different subEvent / value / hasil)", async () => {
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(await status(setHadir(pic, KEP_A, S2, pid(1), true, op("a")))).toBe(409);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), false, op("a")))).toBe(409);
+    expect(hadirOf(pid(1))).toEqual([S1]);
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-04-01T00:00:00Z") });
+    await tetapkanHasil(pic, KEP_A, pid(2), "LULUS", op("h"));
+    expect(await status(tetapkanHasil(pic, KEP_A, pid(2), "TIDAK LULUS", op("h")))).toBe(409);
+    expect(rowOf(pid(2)).fields[P.keterangan]).toBe("LULUS");
+  });
+  it("I-1/I-2: a replay superseded by a newer opId returns the real state and writes nothing", async () => {
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    await setHadir(pic, KEP_A, S1, pid(1), false, op("b"));
+    const writes = vi.mocked(client.updateRecords).mock.calls.length;
+    expect(await setHadir(pic, KEP_A, S1, pid(1), true, op("a"))).toEqual({ hadir: false });
+    expect(vi.mocked(client.updateRecords).mock.calls.length).toBe(writes);
+    expect(hadirOf(pid(1))).toEqual([]);
+  });
+  it("I-2: write failure + failed _gagal audit, then replay re-applies (absen_set_ulang)", async () => {
+    const orig = vi.mocked(client.createRecords).getMockImplementation()!;
+    vi.mocked(client.createRecords)
+      .mockImplementationOnce(orig)
+      .mockImplementationOnce(async () => {
+        throw new Error("audit down");
+      });
+    vi.mocked(client.updateRecords).mockImplementationOnce(async () => {
+      throw new Error("boom");
+    });
+    // order: audit ok -> write throws -> _gagal audit throws
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(500);
+    expect(hadirOf(pid(1))).toEqual([]);
+    expect(await setHadir(pic, KEP_A, S1, pid(1), true, op("a"))).toEqual({ hadir: true });
+    expect(hadirOf(pid(1))).toEqual([S1]);
+    expect(audits("absen_set_ulang")).toHaveLength(1);
+  });
+  it("I-3: a second verify read after a delay re-applies a link lost to another instance", async () => {
+    const orig = vi.mocked(client.getRecord).getMockImplementation()!;
+    vi.mocked(client.getRecord)
+      .mockImplementationOnce(orig) // fresh read
+      .mockImplementationOnce(orig) // first verify
+      .mockImplementationOnce(async (t: string, id: string) => {
+        const r = await orig(t, id);
+        r.fields[P.pertemuanHadir] = [];
+        return r;
+      }); // delayed verify sees the link gone
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(2);
+    expect(hadirOf(pid(1))).toEqual([S1]);
+  });
+  it("I-4: semua is capped at 60 per call and resumes with the same opId", async () => {
+    seed(Array.from({ length: 70 }, (_, i) => `N${String(i).padStart(3, "0")}`));
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 60, remaining: 10 });
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 70, remaining: 0 });
+    expect((await getAbsenSheet(pic, KEP_A, S1)).hadirCount).toBe(70);
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 70, remaining: 0 });
+  });
+  it("I-4: a time budget stops the run after at least one peserta", async () => {
+    vi.stubEnv("ABSEN_SEMUA_BUDGET_MS", "0");
+    const r = await setSemuaHadir(pic, KEP_A, S1, op("s"));
+    expect(r).toEqual({ updated: 1, remaining: 3 });
+  });
+  it("I-4: the end-of-run re-list re-applies a link that was lost", async () => {
+    const orig = vi.mocked(client.updateRecords).getMockImplementation()!;
+    let n = 0;
+    vi.mocked(client.updateRecords).mockImplementation(async (t: string, rows: never[], e?: Set<string>) => {
+      if (t === T.pendaftaranEvents && ++n === 2) return []; // second peserta write silently lost
+      return orig(t, rows, e);
+    });
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 4, remaining: 0 });
+    for (const i of [1, 2, 3, 4]) expect(hadirOf(pid(i))).toEqual([S1]);
+    vi.mocked(client.updateRecords).mockImplementation(orig);
+  });
+  it("I-5: names are fetched by RECORD_ID filter in chunks of at most 50", async () => {
+    seed(Array.from({ length: 120 }, (_, i) => `N${String(i).padStart(3, "0")}`));
+    await getAbsenSheet(pic, KEP_A, S1);
+    const calls = vi.mocked(client.listRecords).mock.calls.filter((c) => c[0] === T.teamUmat);
+    expect(calls).toHaveLength(3);
+    for (const c of calls) {
+      const f = String((c[1] as { filterByFormula?: string }).filterByFormula);
+      expect(f).toContain("RECORD_ID()");
+      expect((f.match(/RECORD_ID\(\)=/g) ?? []).length).toBeLessThanOrEqual(50);
+    }
+  });
+  it("M-1: Keterangan is normalised (trim + case)", async () => {
+    seed(["A", "B"], { 1: { [P.keterangan]: " mengundurkan diri " } });
+    expect((await getAbsenSheet(pic, KEP_A, S1)).peserta.find((p) => p.nama === "A")?.mundur).toBe(true);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(409);
+  });
+  it("M-2: audit 'before' keeps only enum Keterangan values", async () => {
+    seed(["A", "B"], { 1: { [P.keterangan]: "catatan rahasia" } });
+    await mundurkanPeserta(pic, KEP_A, pid(1), op("m"));
+    const raw = JSON.stringify(audits("peserta_mundur"));
+    expect(raw).toContain("lainnya");
+    expect(raw).not.toContain("rahasia");
+  });
+  it("M-4: the real opId is stored in the Op ID field", async () => {
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(audits("absen_set")[0].fields[F.auditKep.opId]).toBe(op("a"));
+  });
+  it("M-5: scope is checked before the hasil value", async () => {
+    expect(await status(tetapkanHasil(admB, KEP_A, pid(1), "X" as never, op("h")))).toBe(404);
+    expect(await status(tetapkanHasil(sep, KEP_A, pid(1), "X" as never, op("h")))).toBe(403);
+  });
+});
+
+describe("batalkanMundur", () => {
+  it("clears only MENGUNDURKAN DIRI, audits, then hadir works again; repeat is a no-op", async () => {
+    await mundurkanPeserta(pic, KEP_A, pid(1), op("m"));
+    await batalkanMundur(adm, KEP_A, pid(1), op("b"));
+    expect(rowOf(pid(1)).fields[P.keterangan]).toBeUndefined();
+    await batalkanMundur(adm, KEP_A, pid(1), op("c"));
+    expect(audits("mundur_batal")).toHaveLength(1);
+    expect(await setHadir(pic, KEP_A, S1, pid(1), true, op("a"))).toEqual({ hadir: true });
+  });
+  it("rejected when LULUS/TIDAK LULUS is set; SEP 403; other parish 404; other KEP 404", async () => {
+    store[T.pendaftaranEvents][1].fields[P.keterangan] = "LULUS";
+    expect(await status(batalkanMundur(pic, KEP_A, pid(2), op("b")))).toBe(409);
+    expect(rowOf(pid(2)).fields[P.keterangan]).toBe("LULUS");
+    expect(await status(batalkanMundur(sep, KEP_A, pid(1), op("b")))).toBe(403);
+    expect(await status(batalkanMundur(admB, KEP_A, pid(1), op("b")))).toBe(404);
+    expect(await status(batalkanMundur(pic, KEP_A, pid(99), op("b")))).toBe(404);
   });
 });

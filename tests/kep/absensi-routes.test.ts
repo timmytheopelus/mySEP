@@ -103,6 +103,14 @@ describe("attendance routes", () => {
     expect((await call(mundurRoute, { opId: "op-route-0005" }, { params: pp, as: pic })).status).toBe(200);
     expect((await call(setRoute, { pendaftaranId: PID, hadir: true, opId: "op-route-0006" }, { params: sp, as: pic })).status).toBe(409);
   });
+  it("batal mundur via the mundur route", async () => {
+    await call(mundurRoute, { opId: "op-route-0010" }, { params: pp, as: pic });
+    expect(store[T.pendaftaranEvents][0].fields[P.keterangan]).toBe("MENGUNDURKAN DIRI");
+    expect((await call(mundurRoute, { opId: "op-route-0011", batal: true }, { params: pp, as: sep })).status).toBe(403);
+    expect((await call(mundurRoute, { opId: "op-route-0011", batal: false }, { params: pp, as: pic })).status).toBe(422);
+    expect((await call(mundurRoute, { opId: "op-route-0011", batal: true }, { params: pp, as: pic })).status).toBe(200);
+    expect(store[T.pendaftaranEvents][0].fields[P.keterangan]).toBeUndefined();
+  });
   it("rate limits per actor: 429 with Retry-After", async () => {
     let last = 0;
     for (let i = 0; i < 40; i++) last = (await call(semuaRoute, { opId: `op-route-${String(i).padStart(4, "0")}` }, { params: sp, as: pic })).status;
