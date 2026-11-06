@@ -3,8 +3,7 @@ import { type AtRecord } from "@/lib/airtable/client";
 import { cachedList, invalidateTable, onInvalidate } from "@/lib/airtable/cache";
 import { limitKey, rateLimit, sharedGetJson, sharedSetJson } from "@/lib/ratelimit";
 import { EVENT_ID_FIELD, F, T } from "@/lib/airtable/schema";
-import { assertKepInScope, parokiAllows, scopeFilter } from "@/lib/auth/guard";
-import type { Session } from "@/lib/auth/session";
+import { parokiAllows } from "@/lib/auth/guard";
 
 // Table reads go through the shared per-process cache (src/lib/airtable/cache.ts).
 const PUBLIC_TTL_MS = 10 * 60_000;
@@ -146,12 +145,6 @@ const PEND_CORE = [
   F.pendaftaranEvents.statusPendaftaran,
   F.pendaftaranEvents.kategoriKepesertaan,
   F.pendaftaranEvents.keterangan,
-];
-const HEALTH = [
-  F.pendaftaranEvents.riwayatPenyakit,
-  F.pendaftaranEvents.riwayatAlergi,
-  F.pendaftaranEvents.obatRutin,
-  F.pendaftaranEvents.kontakDarurat,
 ];
 const INACTIVE = new Set(["batal", "dobel daftar"]);
 const isInactive = (r: AtRecord) => INACTIVE.has(str(r.fields[F.pendaftaranEvents.statusPendaftaran]).toLowerCase());
@@ -368,80 +361,6 @@ export async function loadReportCourses(scope: { parokiId: string | "ALL" }): Pr
       peserta,
       rows: all.map(view),
     });
-  }
-  return out;
-}
-
-export type PesertaView = {
-  pendaftaranId: string;
-  eventId: string;
-  teamUmatId: string | null;
-  namaLengkap: string;
-  namaBaptis: string;
-  jenisKelamin: string;
-  tanggalLahir: string | null;
-  statusPernikahan: string;
-  statusPendaftaran: string;
-  kategori: string;
-  keterangan: string;
-  /** Same person probably registered twice in this event (shared phone/email and similar name). Never dropped. */
-  kemungkinanGanda: boolean;
-  /** Present only for PIC/ADMIN whose paroki owns the event. Key is absent for SEP. */
-  kesehatan?: { riwayatPenyakit: string; riwayatAlergi: string; obatRutin: string; kontakDarurat: string };
-};
-
-/**
- * Peserta of the KEP events the session may see (Task 7 guards decide the scope). Every registration is
- * listed; probable duplicates are flagged. Health data only for PIC/ADMIN of the owning paroki; never SEP.
- */
-export async function listPesertaView(session: Session, eventKepId?: string): Promise<PesertaView[]> {
-  const sc = scopeFilter(session);
-  if (eventKepId) await assertKepInScope(session, eventKepId); // 404 for foreign/unknown
-  const withHealth = session.role !== "SEP";
-  const U = F.teamUmat, P = F.pendaftaranEvents;
-  const { pendByEvent, people, courses, ident } = await load({
-    pendFields: withHealth ? HEALTH : [],
-    peopleFields: [U.namaBaptis, U.jenisKelamin, U.tanggalLahir, U.statusPernikahan],
-  });
-  const byId = new Map(people.map((p) => [p.id, p]));
-  const out: PesertaView[] = [];
-  for (const c of courses) {
-    if (!courseInScope(c, sc.parokiId)) continue;
-    if (eventKepId && !c.linkedKepIds.includes(eventKepId)) continue;
-    const mayReadHealth = withHealth && !!session.parokiId && courseInScope(c, session.parokiId);
-    const rows = pendByEvent.get(c.eventId) ?? [];
-    const dupIds = new Set<string>();
-    for (const kategori of new Set(rows.map((r) => str(r.fields[P.kategoriKepesertaan])))) {
-      for (const g of ident.cluster(rows.filter((r) => str(r.fields[P.kategoriKepesertaan]) === kategori)))
-        if (g.length > 1) g.forEach((r) => dupIds.add(r.id));
-    }
-    for (const p of [...rows].sort((a, b) => a.id.localeCompare(b.id))) {
-      const tid = ids(p.fields[P.teamUmat])[0] ?? null;
-      const t = tid ? byId.get(tid) : undefined;
-      const row: PesertaView = {
-        pendaftaranId: p.id,
-        eventId: c.eventId,
-        teamUmatId: tid,
-        namaLengkap: str(t?.fields[U.namaLengkap]),
-        namaBaptis: str(t?.fields[U.namaBaptis]),
-        jenisKelamin: str(t?.fields[U.jenisKelamin]),
-        tanggalLahir: str(t?.fields[U.tanggalLahir]) || null,
-        statusPernikahan: str(t?.fields[U.statusPernikahan]),
-        statusPendaftaran: str(p.fields[P.statusPendaftaran]),
-        kategori: str(p.fields[P.kategoriKepesertaan]),
-        keterangan: str(p.fields[P.keterangan]),
-        kemungkinanGanda: dupIds.has(p.id),
-      };
-      if (mayReadHealth) {
-        row.kesehatan = {
-          riwayatPenyakit: str(p.fields[P.riwayatPenyakit]),
-          riwayatAlergi: str(p.fields[P.riwayatAlergi]),
-          obatRutin: str(p.fields[P.obatRutin]),
-          kontakDarurat: str(p.fields[P.kontakDarurat]),
-        };
-      }
-      out.push(row);
-    }
   }
   return out;
 }

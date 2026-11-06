@@ -10,7 +10,8 @@ import DaftarPage from "@/app/(public)/daftar/[token]/page";
 import { POST as daftarPost } from "@/app/api/daftar/[token]/route";
 import { testimonials, visibleTestimonials } from "../../content/testimonials";
 import { getKepHub } from "@/lib/kep/hub";
-import { listPesertaView, publicStats } from "@/lib/kep/readModel";
+import { getKesehatan } from "@/lib/kep/kesehatan";
+import { publicStats } from "@/lib/kep/readModel";
 import { signRegistrationToken } from "@/lib/kep/registration";
 import { MATRIX } from "./matrix";
 import { BPK_SECRET, EV_A, HEALTH, KEP_A, PII, SESSIONS, call, cookieFor, seedFixture } from "./harness";
@@ -92,12 +93,11 @@ describe("public surfaces never carry personal, health or BPK data", () => {
 });
 
 describe("SEP never receives health data", () => {
-  it("peserta view: health only for the owning parish, never SEP (positive control for PIC)", async () => {
-    const sep = JSON.stringify(await listPesertaView(SESSIONS.SEP, KEP_A));
-    expect(sep).toContain("Agnes Lestari");
-    assertNoHealth("listPesertaView(SEP)", sep);
-    const pic = JSON.stringify(await listPesertaView(SESSIONS.PIC, KEP_A));
+  it("health screen: only the owning parish (PIC, Admin); SEP is refused, other parish gets 404 (positive control for PIC)", async () => {
+    await expect(getKesehatan(SESSIONS.SEP, KEP_A)).rejects.toMatchObject({ status: 403 });
+    const pic = JSON.stringify(await getKesehatan(SESSIONS.PIC, KEP_A));
     expect(pic).toContain(HEALTH.penyakit); // the fixture really carries health data
+    await expect(getKesehatan(SESSIONS.PIC_OTHER, KEP_A)).rejects.toMatchObject({ status: 404 });
   });
 
   it("KEP hub for SEP", async () => {

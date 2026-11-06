@@ -109,6 +109,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
                 Impor dari Excel
               </Link>
             ) : null}
+            {hub.medis ? (
+              <Link prefetch={false} className={styles.linkBtn} href={`/kep/${id}/kesehatan`}>
+                Data kesehatan peserta
+              </Link>
+            ) : null}
             {hub.pic ? (
               <Link prefetch={false} className={styles.linkBtn} href={`/kep/${id}/jadwal`}>
                 {hub.jadwalTerkunci ? "Lihat jadwal pewarta" : "Atur jadwal dan pewarta"}

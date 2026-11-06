@@ -7,7 +7,8 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 
 import { listRecords } from "@/lib/airtable/client";
 import { EVENT_ID_FIELD } from "@/lib/airtable/schema";
-import { PUBLIC_REFRESH_LIMIT, invalidateKepCache, listKepEvents, listPesertaView, publicStats, publicStatsForPage, resetPublicStatsMemory } from "@/lib/kep/readModel";
+import { getKesehatan } from "@/lib/kep/kesehatan";
+import { PUBLIC_REFRESH_LIMIT, invalidateKepCache, listKepEvents, publicStats, publicStatsForPage, resetPublicStatsMemory } from "@/lib/kep/readModel";
 import { resetRateLimitMemory, sharedSetJson } from "@/lib/ratelimit";
 import type { Session } from "@/lib/auth/session";
 
@@ -233,41 +234,6 @@ describe("table cache", () => {
   });
 });
 
-describe("listPesertaView", () => {
-  const P = F.pendaftaranEvents;
-  it("PIC of the same paroki sees health data", async () => {
-    const rows = await listPesertaView(picPandu);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].kesehatan).toEqual({ riwayatPenyakit: "Asma", riwayatAlergi: "Udang", obatRutin: "Ventolin", kontakDarurat: "Ibu 0899" });
-  });
-  it("SEP never gets health data (keys absent, not just empty)", async () => {
-    const rows = await listPesertaView(sep);
-    expect(rows.length).toBeGreaterThan(3);
-    const json = JSON.stringify(rows);
-    for (const k of ["Asma", "Udang", "Ventolin", "Ibu 0899", "kesehatan"]) expect(json).not.toContain(k);
-    expect(Object.keys(rows[0])).not.toContain("kesehatan");
-    expect(JSON.stringify(rows)).not.toContain(P.riwayatPenyakit);
-  });
-  it("other paroki's admin sees neither the rows nor the health data", async () => {
-    const rows = await listPesertaView(admLaur);
-    expect(JSON.stringify(rows)).not.toContain("Asma");
-    expect(rows.every((r) => r.eventId === "recEVLAUR18A00001" || r.eventId === "recEVLAUR18B00001")).toBe(true);
-  });
-  it("flags (does not drop) the same person with same WA and similar name in one event", async () => {
-    const rows = await listPesertaView(sep);
-    const inB = rows.filter((r) => r.eventId === "recEVLAUR18B00001" && r.kategori === "Peserta");
-    expect(inB.filter((r) => r.statusPendaftaran !== "Batal")).toHaveLength(3);
-    const budi = inB.filter((r) => r.namaLengkap.startsWith("Budi"));
-    expect(budi).toHaveLength(2);
-    expect(budi.every((r) => r.kemungkinanGanda)).toBe(true);
-    expect(inB.filter((r) => !r.namaLengkap.startsWith("Budi")).every((r) => !r.kemungkinanGanda)).toBe(true);
-  });
-  it("limits to an eventKep when given", async () => {
-    const rows = await listPesertaView(sep, "recKEPPANDU900001");
-    expect(rows.map((r) => r.eventId)).toEqual(["recEVPANDU900001"]);
-  });
-});
-
 // ------------------------------------------------------------------ fix round 1
 const mk = (id: string, fields: Record<string, unknown>) => ({ id, fields });
 const E = F.events, K = F.eventKep, P = F.pendaftaranEvents, U = F.teamUmat;
@@ -291,15 +257,13 @@ describe("fix round 1: scope is ALL linked KEPs, fail closed", () => {
       if (reversed) { store[T.eventKep].reverse(); store[T.penyelenggaraKep].reverse(); store[T.events].reverse(); }
       for (const s of [picPandu, admLaur]) {
         expect((await listKepEvents({ parokiId: s.parokiId! })).some((e) => e.eventId === "recEVMULTI0000001")).toBe(false);
-        expect(JSON.stringify(await listPesertaView(s))).not.toContain("Rahasia");
-        expect(await listPesertaView(s, s === picPandu ? "recKEPMULTI000002" : "recKEPMULTI000001")).toEqual([]);
+        // the health screen refuses a KEP whose event is shared with a KEP of another parish (all linked KEPs must be in scope)
+        await expect(getKesehatan(s, s === picPandu ? "recKEPMULTI000002" : "recKEPMULTI000001")).rejects.toMatchObject({ status: 404 });
       }
       const sepRows = await listKepEvents({ parokiId: "ALL" });
       const m = sepRows.find((e) => e.eventId === "recEVMULTI0000001")!;
       expect(m).toMatchObject({ parokiId: null, parokiNama: "Belum terpetakan" });
-      const view = await listPesertaView(sep, "recKEPMULTI000002"); // any linked KEP id works
-      expect(view).toHaveLength(1);
-      expect(JSON.stringify(view)).not.toContain("Rahasia");
+      await expect(getKesehatan(sep, "recKEPMULTI000002")).rejects.toMatchObject({ status: 403 }); // SEP never reads health data
     });
   }
   it("a linked KEP without organizer blocks PIC visibility", async () => {
@@ -318,16 +282,11 @@ describe("fix round 1: dedupe is pairwise, name-aware, no chaining", () => {
     daftar("recPSH1000000000001", "recEVDEDUP0000001", "recTUH1000000000001");
     daftar("recPSH2000000000001", "recEVDEDUP0000001", "recTUH2000000000001");
     expect(await count()).toBe(2);
-    const rows = (await listPesertaView(picPandu)).filter((r) => r.eventId === "recEVDEDUP0000001");
-    expect(rows).toHaveLength(2);
-    expect(rows.some((r) => r.kemungkinanGanda)).toBe(false);
   });
   it("placeholder phone shared by more than 3 names is ignored", async () => {
     const names = ["Andi Wijaya", "Andi W.", "Rina Putri", "Doni Kusuma", "Eko Prasetyo"];
     names.forEach((n, i) => { person(`recTUP${i}000000000001`, n, "0800-0000-0000"); daftar(`recPSP${i}000000000001`, "recEVDEDUP0000001", `recTUP${i}000000000001`, { [P.keterangan]: "LULUS" }); });
     expect(await count()).toBe(5);
-    const rows = (await listPesertaView(picPandu)).filter((r) => r.eventId === "recEVDEDUP0000001");
-    expect(rows.some((r) => r.kemungkinanGanda)).toBe(false);
   });
   it("A~B by phone and B~C by email with different names does not chain", async () => {
     person("recTUC1000000000001", "Joko Widodo", "0822-1111-2222");
@@ -417,11 +376,6 @@ describe("fix round 1: cold-read load", () => {
       const again = await listKepEvents({ parokiId: "ALL" });
       expect(again.some((e) => e.eventId === "recEVLATE000000001")).toBe(true);
     } finally { vi.mocked(listRecords).mockImplementation(real); }
-  });
-  it("never requests health fields for SEP", async () => {
-    await listPesertaView(sep);
-    const asked = vi.mocked(listRecords).mock.calls.flatMap((c) => c[1].fields);
-    for (const f of [F.pendaftaranEvents.riwayatPenyakit, F.pendaftaranEvents.riwayatAlergi, F.pendaftaranEvents.obatRutin, F.pendaftaranEvents.kontakDarurat]) expect(asked).not.toContain(f);
   });
   it("public TTL boundary: cached at 9 minutes, refreshed at 11", async () => {
     vi.useFakeTimers();

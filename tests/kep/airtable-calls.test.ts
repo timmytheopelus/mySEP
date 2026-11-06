@@ -29,6 +29,10 @@ function evalFormula(table: string, f: string | undefined, rows: Row[]): Row[] {
     const email = /=\s*"([^"]+)"/.exec(f)?.[1];
     return rows.filter((r) => String(r.fields[F.teamUmat.email] ?? "").toLowerCase() === email);
   }
+  if (table === T.teamUmat && /^FIND\("(\d+)",SUBSTITUTE/.test(f)) {
+    const wa = /^FIND\("(\d+)"/.exec(f)![1];
+    return rows.filter((r) => String(r.fields[F.teamUmat.noWhatsapp] ?? "").replace(/\D/g, "").includes(wa));
+  }
   const eqs = [...f.matchAll(/\{(fld[A-Za-z0-9]+)\}\s*=\s*["']([^"']*)["']/g)];
   if (eqs.length) {
     const want = new Map<string, Set<string>>();
@@ -68,6 +72,10 @@ import { invalidateKepCache } from "@/lib/kep/readModel";
 import { getAbsenSheet, setHadir, setSemuaHadir } from "@/lib/kep/absensi";
 import { getKepHub } from "@/lib/kep/hub";
 import { registerPeserta } from "@/lib/kep/registration";
+import { updateWaktu } from "@/lib/kep/jadwal";
+import { tambahWalkIn } from "@/lib/kep/walkin";
+import { getKesehatan } from "@/lib/kep/kesehatan";
+import { resetRateLimitMemory } from "@/lib/ratelimit";
 import type { Session } from "@/lib/auth/session";
 
 const PA = "recPAROKIA0000001";
@@ -181,6 +189,40 @@ describe("Airtable requests per hot path (final fix C1f)", () => {
     report["registration warm"] = warm.requests;
     expect(cold.requests).toBeLessThanOrEqual(12);
     expect(warm.requests).toBeLessThanOrEqual(7);
-    console.info("[airtable-calls]", JSON.stringify(report));
+  });
+  it("jadwal tanggal/jam edit (Final fix B, I7): warm <= 6 requests", async () => {
+    await getAbsenSheet(pic, KEP, sub(1)); // warm scope + sub events
+    const w = await measure(() => updateWaktu(pic, KEP, sub(2), { tanggal: "2026-11-09", jamMulai: "19:00", jamSelesai: "21:00" }, "op-count-jadwal1"));
+    report["jadwal edit warm"] = w.requests;
+    expect(w.requests).toBeLessThanOrEqual(6);
+    expect((await listPertemuanDate(sub(2)))).toBe("2026-11-09"); // the next read already sees it
+  });
+  it("walk-in (Final fix B, I8): warm <= 12 requests, one registration plus one tap; the next sheet read is cheap", async () => {
+    resetRateLimitMemory();
+    await getAbsenSheet(pic, KEP, sub(1));
+    await registerPeserta(EV, { namaLengkap: "Pemanasan", wa: "0812-0000-0001", email: "p@example.com", jenisKelamin: "Pria", tanggalLahir: "1985-04-12", alamat: "Jl. Merdeka 1", parokiAsalId: PA, statusPernikahan: "Menikah", kontakDarurat: "Ibu 0811", pendukungDoa: [{ nama: "Ana", kontak: "081200000001" }, { nama: "Budi", kontak: "081200000002" }] }, { actorEmail: "pic@x.id" });
+    const w = await measure(() => tambahWalkIn(pic, KEP, sub(1), { namaLengkap: "Tamu Datang", wa: "0813-9999-0001" }, "op-count-walkin1"));
+    report["walk-in warm"] = w.requests;
+    expect(w.requests).toBeLessThanOrEqual(12);
+    const after = await measure(() => getAbsenSheet(pic, KEP, sub(1)));
+    expect(after.requests).toBeLessThanOrEqual(2);
+  });
+  it("health screen (Final fix B): first view <= 5 incl. audit, a reload inside the audit window <= 2", async () => {
+    resetRateLimitMemory();
+    await getAbsenSheet(pic, KEP, sub(1)); // warm scope
+    const first = await measure(() => getKesehatan(pic, KEP));
+    const again = await measure(() => getKesehatan(pic, KEP));
+    report["kesehatan first"] = first.requests;
+    report["kesehatan reload"] = again.requests;
+    expect(first.byTable[T.pendaftaranEvents]).toBe(1); // one KEP's rows, never the whole table
+    expect(first.requests).toBeLessThanOrEqual(5);
+    expect(again.requests).toBeLessThanOrEqual(2);
+    expect(again.byTable[T.auditKep] ?? 0).toBe(0);
+    process.stderr.write("[airtable-calls] " + JSON.stringify(report) + "\n");
   });
 });
+
+async function listPertemuanDate(id: string) {
+  const { listPertemuan } = await import("@/lib/kep/absensi");
+  return (await listPertemuan(pic, KEP)).items.find((p) => p.id === id)?.tanggal;
+}

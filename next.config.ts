@@ -22,6 +22,11 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // Health data of the participants: never stored by a browser, proxy or CDN.
+        source: "/kep/:id/kesehatan",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+      {
         // The service worker must always be revalidated so updates reach installed copies.
         source: "/sw.js",
         headers: [

@@ -108,6 +108,14 @@ async function kepOfEvent(session: Session, eventIds: string[]) {
   return { eventKep: k, parokiId: session.role === "SEP" ? (parokiOf.get(k.id)?.[0] ?? null) : session.parokiId };
 }
 
+/**
+ * Every EventKEP linked to these Events rows must be in the actor's scope (an event shared with a KEP of another
+ * parish is refused with 404). Used where the rows of the EVENT are disclosed, e.g. the health screen.
+ */
+export async function assertEventsInScope(session: Session, eventIds: string[]) {
+  return kepOfEvent(session, eventIds);
+}
+
 async function fetchOr404(table: string, id: string): Promise<AtRecord> {
   if (typeof id !== "string" || !REC_ID.test(id)) throw new HttpError(404);
   try {
