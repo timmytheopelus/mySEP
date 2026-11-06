@@ -208,8 +208,8 @@ test.describe("jadwal dan pewarta", () => {
     await first.getByRole("button", { name: /ubah pewarta/i }).click();
     await expect(first.getByRole("checkbox", { name: "Pewarta Pensiun" })).toHaveCount(0);
     await first.getByRole("checkbox", { name: "Pewarta Satu" }).check();
-    await first.getByRole("button", { name: /^simpan/i }).click();
-    await expect(first.getByRole("status")).toContainText(/tersimpan/i);
+    await first.getByRole("button", { name: /^simpan pewarta/i }).click();
+    await expect(first.getByRole("status").filter({ hasText: /tersimpan/i })).toBeVisible();
     await page.reload();
     await expect(page.getByTestId("jadwal-item").first()).toContainText("Pewarta: Pewarta Satu");
     await expect(page.getByTestId("jadwal-item").nth(1)).toContainText("belum ditugaskan");
@@ -227,7 +227,7 @@ test.describe("jadwal dan pewarta", () => {
     await page.goto(`/kep/${KEP_A}/jadwal`);
     await expect(page.getByText(/terkunci setelah (kep )?disetujui/i).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /ubah pewarta/i })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^simpan$/i })).toHaveCount(0); // pewarta: tidak ada; tanggal/jam tetap bisa disesuaikan (Simpan jadwal)
+    await expect(page.getByRole("button", { name: /^simpan pewarta/i })).toHaveCount(0); // pewarta: tidak ada; tanggal/jam tetap bisa disesuaikan (Simpan jadwal)
     const r = await page.request.post(`/api/kep/${KEP_A}/subevent/${SUB_A_TODAY}/pengajar`, {
       headers: { "Sec-Fetch-Site": "same-origin" },
       data: { pengajarIds: [PENGAJAR_1], opId: "op-e2e-lock-0001" },

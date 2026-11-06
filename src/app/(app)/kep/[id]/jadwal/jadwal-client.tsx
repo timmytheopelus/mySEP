@@ -209,7 +209,7 @@ export default function JadwalClient({
             {terkunci ? null : (
             <div className={styles.actions}>
               <button type="button" className={styles.btnPrimary} onClick={() => save(p.id)} disabled={busy[p.id] || !dirty}>
-                {busy[p.id] ? "Menyimpan..." : "Simpan"}
+                {busy[p.id] ? "Menyimpan..." : "Simpan pewarta"}
               </button>
             </div>
             )}
