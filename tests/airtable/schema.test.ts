@@ -10,8 +10,8 @@ describe("schema", () => {
     expect(out).toEqual({ [F.teamUmat.namaLengkap]: "A" });
   });
 
-  it("returns empty for unknown tables", () => {
-    expect(pickAllowed("tblUnknown", { [F.teamUmat.namaLengkap]: "A" })).toEqual({});
+  it("fails closed (throws) for tables without an allowlist", () => {
+    expect(() => pickAllowed("tblUnknown", { [F.teamUmat.namaLengkap]: "A" })).toThrow();
   });
 
   it("allowlists every known field and no reverse-link fields", () => {

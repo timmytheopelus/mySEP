@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { F, T } from "@/lib/airtable/schema";
-import { main, type DataSource } from "../../scripts/map-legacy";
+import { applyPlan, buildPlan, main, type DataSource } from "../../scripts/map-legacy";
 
 type Row = { id: string; fields: Record<string, unknown> };
 const FIX = join(__dirname, "fixtures");
@@ -44,7 +44,17 @@ function memorySource(kind: "live" | "snapshot" = "live"): DataSource {
 }
 
 let out: string;
-const run = (argv: string[], source?: DataSource) => main(argv, { source, outDir: out, sleep: async () => {}, log: () => {} });
+const EMAIL = "operator@example.org";
+let logs: string[];
+const run = (argv: string[], source?: DataSource, env: Record<string, string | undefined> = { MAP_LEGACY_ACTOR_EMAIL: EMAIL }) =>
+  main(argv, { source, outDir: out, sleep: async () => {}, log: (s) => logs.push(s), env });
+const hashOf = async (src: DataSource) => {
+  logs = [];
+  await run([], src);
+  return /Plan hash: ([0-9a-f]{64})/.exec(logs.join("\n"))![1];
+};
+/** Approved apply: dry-run for the hash first, then apply with exactly that hash. */
+const apply = async (src: DataSource, extra: string[] = []) => run(["--apply", "--confirm=YA", `--expect-hash=${await hashOf(src)}`, ...extra], src);
 const csv = () => readFileSync(join(out, "legacy-mapping.csv"), "utf8").replace(/^\ufeff/, "");
 const lines = () => csv().split("\r\n").filter(Boolean);
 const withJenis = (j: string) => lines().filter((l) => l.startsWith(j + ","));
@@ -52,6 +62,7 @@ const withJenis = (j: string) => lines().filter((l) => l.startsWith(j + ","));
 beforeEach(() => {
   store = {};
   for (const [t, f] of Object.entries(TABLE_FILE)) store[t] = load(f);
+  logs = [];
   created = [];
   updated = [];
   reads = [];
@@ -81,7 +92,7 @@ describe("map-legacy dry-run", () => {
     const dup = withJenis("duplikat").join("\n");
     expect(dup).toContain("recEV_L18a");
     expect(dup).toContain("recEV_L18b");
-    await run(["--apply", "--confirm=YA"], src);
+    await apply(src, ["--rerun"]);
     expect(store[T.events]).toHaveLength(5); // nothing merged or deleted
     expect(store[T.eventKep].find((r) => r.id === "recKEP_L18")!.fields[F.eventKep.events]).toBeUndefined(); // ambiguous Events match not written
   });
@@ -90,7 +101,7 @@ describe("map-legacy dry-run", () => {
     const src = memorySource();
     await run([], src);
     expect(withJenis("tidak cocok").join("\n")).toContain("recORG_UNK");
-    await run(["--apply", "--confirm=YA"], src);
+    await apply(src, ["--rerun"]);
     expect(store[T.penyelenggaraKep].find((r) => r.id === "recORG_UNK")!.fields[F.penyelenggaraKep.paroki]).toBeUndefined();
     expect(store[T.subEvent].some((r) => String(r.fields[F.subEvent.keterangan]).includes("recBAB5"))).toBe(false);
   });
@@ -121,7 +132,7 @@ describe("map-legacy apply", () => {
 
   it("copies BabKEP to SubEvent, fills Events and Paroki, and is idempotent on a second apply", async () => {
     const src = memorySource();
-    expect(await run(["--apply", "--confirm=YA"], src)).toBe(0);
+    expect(await apply(src)).toBe(0);
     const subs = store[T.subEvent].filter((r) => String(r.fields[F.subEvent.keterangan]).startsWith("legacy:"));
     // recBAB7 was already copied; BAB1-4 are new (BAB4/BAB3 -> KR3, BAB1/BAB2 -> G5); BAB5/BAB6 unmapped
     expect(subs.map((r) => r.fields[F.subEvent.keterangan]).sort()).toEqual(["legacy:recBAB1", "legacy:recBAB2", "legacy:recBAB3", "legacy:recBAB4", "legacy:recBAB7"]);
@@ -142,9 +153,14 @@ describe("map-legacy apply", () => {
     const audit = created.filter((c) => c.table === T.auditKep);
     expect(audit).toHaveLength(1);
     expect(audit[0].rows[0][F.auditKep.aksi]).toBe("legacy_map_apply");
+    expect(audit[0].rows[0][F.auditKep.pelaku]).toBe(EMAIL);
+    expect(audit[0].rows[0][F.auditKep.targetId]).toBe("map-legacy");
+    const sesudah = JSON.parse(String(audit[0].rows[0][F.auditKep.sesudah]));
+    expect(Object.values(sesudah).every((v) => typeof v === "number" || typeof v === "boolean")).toBe(true);
+    expect(logs.join("\n")).toMatch(/Applied: SubEvent dibuat=4/);
 
     const before = { created: created.length, updated: updated.length, subs: store[T.subEvent].length };
-    expect(await run(["--apply", "--confirm=YA"], src)).toBe(0);
+    expect(await apply(src, ["--rerun"])).toBe(0);
     expect(store[T.subEvent]).toHaveLength(before.subs);
     expect(created.slice(before.created).filter((c) => c.table === T.subEvent)).toHaveLength(0);
     expect(updated).toHaveLength(before.updated);
@@ -152,7 +168,7 @@ describe("map-legacy apply", () => {
 
   it("never writes a non-empty field and never deletes", async () => {
     const src = memorySource();
-    await run(["--apply", "--confirm=YA"], src);
+    await apply(src, ["--rerun"]);
     const touched = updated.flatMap((u) => u.rows.map((r) => r.id));
     expect(touched).not.toContain("recKEP_KR3"); // Events already set
     expect(touched).not.toContain("recORG_KR"); // Paroki already set (even to a different parish)
@@ -173,9 +189,89 @@ describe("map-legacy apply", () => {
     for (let i = 0; i < 25; i++)
       store[T.babKep].push({ id: `recBIG${i}`, fields: { [F.babKep.bab]: "Bab 3 Perkembangan Iman", [F.babKep.eventKep]: ["recKEP_BIG"] } });
     const src = memorySource();
-    await run(["--apply", "--confirm=YA"], src);
+    await apply(src, ["--rerun"]);
     const subCalls = created.filter((c) => c.table === T.subEvent);
     expect(subCalls.length).toBeGreaterThanOrEqual(3);
     expect(Math.max(...subCalls.map((c) => c.rows.length))).toBeLessThanOrEqual(10);
+  });
+
+  it("refuses without a valid actor email, without --expect-hash, with a stale hash, and on a second run without --rerun", async () => {
+    const src = memorySource();
+    const h = await hashOf(src);
+    for (const [argv, env] of [
+      [["--apply", "--confirm=YA", `--expect-hash=${h}`], {}],
+      [["--apply", "--confirm=YA", `--expect-hash=${h}`], { MAP_LEGACY_ACTOR_EMAIL: "script:map-legacy" }],
+      [["--apply", "--confirm=YA"], { MAP_LEGACY_ACTOR_EMAIL: EMAIL }],
+      [["--apply", "--confirm=YA", `--expect-hash=${"0".repeat(64)}`], { MAP_LEGACY_ACTOR_EMAIL: EMAIL }],
+    ] as [string[], Record<string, string>][]) {
+      expect(await run(argv, src, env)).toBe(2);
+    }
+    expect(src.create).not.toHaveBeenCalled();
+    expect(src.update).not.toHaveBeenCalled();
+    expect(await apply(src)).toBe(0);
+    expect(await run(["--apply", "--confirm=YA", `--expect-hash=${await hashOf(src)}`], src)).toBe(2);
+  });
+
+  it("partial failure: audit says failed, exit 1, re-run creates no duplicate keys and keeps Urutan contiguous", async () => {
+    for (let i = 0; i < 25; i++)
+      store[T.babKep].push({ id: `recPF${String(i).padStart(2, "0")}`, fields: { [F.babKep.bab]: "Bab 3 Perkembangan Iman", [F.babKep.tanggal]: `2024-06-${String(i + 1).padStart(2, "0")}`, [F.babKep.eventKep]: ["recKEP_G5"] } });
+    const src = memorySource();
+    const realCreate = src.create;
+    let n = 0;
+    src.create = vi.fn(async (t, rows) => {
+      if (t === T.subEvent && ++n === 2) throw new Error("boom");
+      return realCreate(t, rows);
+    });
+    expect(await apply(src)).toBe(1);
+    expect(logs.join("\n")).toMatch(/Applied: SubEvent dibuat=10/);
+    const audit = created.filter((c) => c.table === T.auditKep);
+    expect(String(audit[0].rows[0][F.auditKep.sesudah])).toContain('"gagal":true');
+    src.create = realCreate;
+    expect(await apply(src, ["--rerun"])).toBe(0);
+    const g5 = store[T.subEvent].filter((r) => (r.fields[F.subEvent.acara] as string[])?.[0] === "recEV_G5");
+    const keys = g5.map((r) => r.fields[F.subEvent.keterangan]);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(g5).toHaveLength(27);
+    expect(g5.map((r) => r.fields[F.subEvent.urutan] as number).sort((a, b) => a - b)).toEqual(Array.from({ length: 27 }, (_, i) => i + 1));
+  });
+
+  it("audit write failure still prints counts and exits non-zero", async () => {
+    const src = memorySource();
+    const realCreate = src.create;
+    src.create = vi.fn(async (t, rows) => {
+      if (t === T.auditKep) throw new Error("audit down");
+      return realCreate(t, rows);
+    });
+    expect(await apply(src)).toBe(1);
+    expect(logs.join("\n")).toMatch(/Applied: SubEvent dibuat=4/);
+    expect(logs.join("\n")).toMatch(/audit row NOT written/);
+  });
+
+  it("re-reads before each batch and skips targets that became non-empty", async () => {
+    const plan = buildPlan(store);
+    const src = memorySource();
+    store[T.eventKep].find((r) => r.id === "recKEP_G5")!.fields[F.eventKep.events] = ["recEV_OTHER"];
+    const res = await applyPlan(src, { ...plan, subEvents: [], penyelenggaraUpdates: [] }, async () => {});
+    expect(res.counts.events_diisi).toBe(0);
+    expect(res.counts.dilewati).toBe(1);
+    expect(src.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("map-legacy planning details", () => {
+  it("folds accents when matching parish names", () => {
+    store[T.paroki].push({ id: "recPAR_ACC", fields: { [F.paroki.nama]: "Santa Maria Tak Bernoda Café" } });
+    store[T.penyelenggaraKep].push({ id: "recORG_ACC", fields: { [F.penyelenggaraKep.penyelenggara]: "Santa Maria Tak Bernoda Cafe" } });
+    const plan = buildPlan(store);
+    expect(plan.penyelenggaraUpdates.find((u) => u.id === "recORG_ACC")?.fields[F.penyelenggaraKep.paroki]).toEqual(["recPAR_ACC"]);
+  });
+
+  it("reports KEP events whose angkatan cannot be parsed, notes the parish source, and has note lines + hash", async () => {
+    store[T.events].push({ id: "recEV_NOANG", fields: { [F.events.namaAcara]: "KEP Paroki Ganesha Perdana", [F.events.kelompokAcara]: ["KEP"] } });
+    await run([], memorySource());
+    expect(withJenis("tidak cocok").join("\n")).toMatch(/recEV_NOANG,.*angkatan tak terbaca/);
+    expect(csv()).toContain("paroki dari nama penyelenggara");
+    expect(csv()).toMatch(/Plan hash: [0-9a-f]{64}/);
+    expect(csv()).toContain("Urutan SubEvent baru ditambahkan setelah");
   });
 });

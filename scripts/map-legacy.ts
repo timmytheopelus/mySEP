@@ -9,6 +9,7 @@
  * (b) fill EventKEP.Events (paroki+angkatan -> Events, only if exactly one candidate),
  * (c) fill Pengelenggara KEP.Paroki (exact normalised name match). Only empty fields / new rows; no deletes.
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,7 +28,7 @@ export type Jenis = "cocok" | "tidak cocok" | "duplikat" | "rencana tulis";
 export type Row = { jenis: Jenis; tabel: string; ids: string; keterangan: string; rencana: string };
 type SubCreate = { legacyId: string; fields: Record<string, unknown> };
 type Upd = { id: string; fields: Record<string, unknown> };
-export type Plan = { rows: Row[]; subEvents: SubCreate[]; eventKepUpdates: Upd[]; penyelenggaraUpdates: Upd[] };
+export type Plan = { hash: string; rows: Row[]; subEvents: SubCreate[]; eventKepUpdates: Upd[]; penyelenggaraUpdates: Upd[] };
 
 // ---- table -> files / fields (exact snapshot format is documented in task-18-report.md) ----
 const SOURCES: { table: string; file: string; fields: string[] }[] = [
@@ -39,7 +40,7 @@ const SOURCES: { table: string; file: string; fields: string[] }[] = [
   { table: T.subEvent, file: "subevent.json", fields: [F.subEvent.acara, F.subEvent.urutan, F.subEvent.keterangan] },
 ];
 
-const LEGACY = /(?:^|\s)legacy:(rec[A-Za-z0-9_]+)/g;
+const LEGACY = /legacy:(rec\w+)/g;
 // Teaching order, used only as a tie-break after the date. Unknown names sort last.
 const BAB_ORDER = [
   "Misa Pembukaan", "Iman Katolik", "Bab 1 Orientasi Evangelisasi", "Bab 2 Evangelisasi Pendalaman", "Bab 3 Perkembangan Iman",
@@ -51,7 +52,8 @@ const BAB_ORDER = [
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : "")).filter(Boolean) : str(v) ? [str(v)] : []);
-const normName = (s: string) => s.toLowerCase().replace(/\b(paroki|kep)\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+const empty = (v: unknown) => v == null || v === "" || (Array.isArray(v) && v.length === 0);
+const normName = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\b(paroki|kep)\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
 const parseAngkatan = (name: string): number | null => {
   const m = /angkatan\s*(\d{1,3})/i.exec(name);
   return m ? Number(m[1]) : null;
@@ -77,16 +79,19 @@ export function buildPlan(d: Record<string, AtRec[]>): Plan {
   }
   const penyelenggaraUpdates: Upd[] = [];
   const orgParokiNorm = new Map<string, string>();
+  const orgSrc = new Map<string, string>();
   for (const o of orgs) {
     const name = str(o.fields[F.penyelenggaraKep.penyelenggara]);
     const linked = ids(o.fields[F.penyelenggaraKep.paroki]);
     if (linked.length) {
       orgParokiNorm.set(o.id, normName(parokiName.get(linked[0]) ?? name));
+      orgSrc.set(o.id, "Paroki tertaut");
       rows.push(row("cocok", "Pengelenggara KEP", [o.id], `Paroki sudah terisi (${linked.map((l) => parokiName.get(l) ?? l).join(", ")}); tidak diubah`));
       continue;
     }
     const n = normName(name);
     orgParokiNorm.set(o.id, n);
+    orgSrc.set(o.id, "nama penyelenggara");
     const hit = n ? (byNorm.get(n) ?? []) : [];
     if (!name) rows.push(row("tidak cocok", "Pengelenggara KEP", [o.id], "Nama penyelenggara kosong"));
     else if (hit.length === 0) rows.push(row("tidak cocok", "Pengelenggara KEP", [o.id], `${name} (nama penyelenggara) tidak sama persis dengan paroki mana pun; tidak ditulis`));
@@ -105,6 +110,7 @@ export function buildPlan(d: Record<string, AtRec[]>): Plan {
     const name = str(e.fields[F.events.namaAcara]);
     const a = parseAngkatan(name);
     if (a != null) courseEvents.push({ id: e.id, parish: parishOfEvent(name), angkatan: a });
+    else rows.push(row("tidak cocok", "Events", [e.id], "angkatan tak terbaca dari nama acara KEP; tidak dipakai untuk pencocokan"));
   }
   const evGroups = new Map<string, Ev[]>();
   for (const e of courseEvents) {
@@ -117,7 +123,7 @@ export function buildPlan(d: Record<string, AtRec[]>): Plan {
   // ---- (b) EventKEP.Events ----
   const eventsOfKep = new Map<string, string[]>(); // resolved (existing or planned) events per EventKEP
   const eventKepUpdates: Upd[] = [];
-  type Prop = { kep: AtRec; ev: string };
+  type Prop = { kep: AtRec; ev: string; via: string };
   const proposals: Prop[] = [];
   const claims = new Map<string, string[]>(); // event id -> EventKEP ids (existing links + proposals)
   const claim = (ev: string, kep: string) => (claims.get(ev) ?? claims.set(ev, []).get(ev)!).push(kep);
@@ -135,15 +141,16 @@ export function buildPlan(d: Record<string, AtRec[]>): Plan {
     }
     const angkatan = typeof k.fields[F.eventKep.angkatan] === "number" ? (k.fields[F.eventKep.angkatan] as number) : null;
     const parishes = [...new Set(ids(k.fields[F.eventKep.penyelenggara]).map((o) => orgParokiNorm.get(o) ?? "").filter(Boolean))];
+    const via = ` (paroki dari ${[...new Set(ids(k.fields[F.eventKep.penyelenggara]).map((o) => orgSrc.get(o) ?? "").filter(Boolean))].join(" / ") || "-"})`;
     if (angkatan == null || parishes.length !== 1) {
-      rows.push(row("tidak cocok", "EventKEP", [k.id], angkatan == null ? "Angkatan kosong" : parishes.length === 0 ? "Paroki tidak diketahui" : "Lebih dari satu paroki; tidak ditulis"));
+      rows.push(row("tidak cocok", "EventKEP", [k.id], (angkatan == null ? "Angkatan kosong" : parishes.length === 0 ? "Paroki tidak diketahui" : "Lebih dari satu paroki; tidak ditulis") + via));
       continue;
     }
     const cands = courseEvents.filter((e) => e.parish === parishes[0] && e.angkatan === angkatan);
-    if (cands.length === 0) rows.push(row("tidak cocok", "EventKEP", [k.id], `Tidak ada Events untuk paroki "${parishes[0]}" angkatan ${angkatan}`));
-    else if (cands.length > 1) rows.push(row("duplikat", "EventKEP", [k.id, ...cands.map((c) => c.id)], `${cands.length} Events cocok untuk paroki "${parishes[0]}" angkatan ${angkatan}; ambigu, tidak ditulis`));
+    if (cands.length === 0) rows.push(row("tidak cocok", "EventKEP", [k.id], `Tidak ada Events untuk paroki "${parishes[0]}" angkatan ${angkatan}${via}`));
+    else if (cands.length > 1) rows.push(row("duplikat", "EventKEP", [k.id, ...cands.map((c) => c.id)], `${cands.length} Events cocok untuk paroki "${parishes[0]}" angkatan ${angkatan}; ambigu, tidak ditulis${via}`));
     else {
-      proposals.push({ kep: k, ev: cands[0].id });
+      proposals.push({ kep: k, ev: cands[0].id, via });
       claim(cands[0].id, k.id);
     }
   }
@@ -153,7 +160,7 @@ export function buildPlan(d: Record<string, AtRec[]>): Plan {
     else {
       eventKepUpdates.push({ id: p.kep.id, fields: { [F.eventKep.events]: [p.ev] } });
       eventsOfKep.set(p.kep.id, [p.ev]);
-      rows.push(row("rencana tulis", "EventKEP", [p.kep.id, p.ev], "Paroki + angkatan cocok dengan satu Events", "isi field Events"));
+      rows.push(row("rencana tulis", "EventKEP", [p.kep.id, p.ev], `Paroki + angkatan cocok dengan satu Events${p.via}`, "isi field Events"));
     }
   }
 
@@ -199,12 +206,25 @@ export function buildPlan(d: Record<string, AtRec[]>): Plan {
       rows.push(row("rencana tulis", "BabKEP", [p.bab.id, ev], `Salin "${p.agenda}"${p.date ? ` (${p.date})` : ""} ke SubEvent`, `buat baris SubEvent urutan ${fields[F.subEvent.urutan]}`));
     });
   }
-  return { rows, subEvents, eventKepUpdates, penyelenggaraUpdates };
+  const sortObj = (o: Record<string, unknown>) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+  const entries = [
+    ...penyelenggaraUpdates.map((u) => `P|${u.id}|${sortObj(u.fields)}`),
+    ...eventKepUpdates.map((u) => `E|${u.id}|${sortObj(u.fields)}`),
+    ...subEvents.map((u) => `S|${u.legacyId}|${sortObj(u.fields)}`),
+  ].sort();
+  const hash = createHash("sha256").update(entries.join("\n")).digest("hex");
+  return { hash, rows, subEvents, eventKepUpdates, penyelenggaraUpdates };
 }
 
 export function planCsv(plan: Plan): string {
   const rows = plan.rows.map((r) => ({ jenis: r.jenis, tabel: r.tabel, "record id(s)": r.ids, keterangan: r.keterangan, rencana: r.rencana }));
-  return toCsv(rows.length ? rows : [{ jenis: "", tabel: "", "record id(s)": "", keterangan: "", rencana: "" }]);
+  const note = (k: string) => ({ jenis: "catatan", tabel: "-", "record id(s)": "", keterangan: k, rencana: "" });
+  const notes = [
+    note(`Plan hash: ${plan.hash} (pakai --expect-hash=${plan.hash} saat --apply)`),
+    note(`Jumlah tulis: SubEvent=${plan.subEvents.length}, EventKEP.Events=${plan.eventKepUpdates.length}, Pengelenggara KEP.Paroki=${plan.penyelenggaraUpdates.length}`),
+    note("Urutan SubEvent baru ditambahkan setelah Urutan terbesar yang sudah ada pada Events yang sama"),
+  ];
+  return toCsv([...notes, ...rows]);
 }
 
 // ---- data sources ----
@@ -232,7 +252,7 @@ export async function createLiveSource(): Promise<DataSource> {
   const c = await import("@/lib/airtable/client");
   return {
     kind: "live",
-    read: (table) => c.listRecords(table, { fields: SOURCES.find((s) => s.table === table)!.fields }),
+    read: (table) => c.listRecords(table, { fields: [...SOURCES, { table: T.auditKep, file: "", fields: [F.auditKep.aksi] }].find((s) => s.table === table)!.fields }),
     create: (table, rows) => c.createRecords(table, rows),
     update: (table, rows, extra) => c.updateRecords(table, rows, extra),
   };
@@ -247,41 +267,58 @@ async function chunked<I>(items: I[], sleep: (ms: number) => Promise<void>, fn: 
   }
 }
 
-export async function applyPlan(src: DataSource, plan: Plan, sleep: (ms: number) => Promise<void>): Promise<Record<string, number>> {
+export type ApplyResult = { counts: Record<string, number>; error?: string };
+
+/** Re-reads the table right before each batch and drops targets whose field became non-empty meanwhile. */
+async function stillEmpty(src: DataSource, table: string, field: string, batch: Upd[]): Promise<Upd[]> {
+  const byId = new Map((await src.read(table)).map((r) => [r.id, r]));
+  return batch.filter((u) => {
+    const r = byId.get(u.id);
+    return !!r && empty(r.fields[field]);
+  });
+}
+
+/** Writes only. Never throws for write errors: returns the counts so far and the error. */
+export async function applyPlan(src: DataSource, plan: Plan, sleep: (ms: number) => Promise<void>): Promise<ApplyResult> {
   if (src.kind !== "live") throw new Error("Apply needs a live source");
-  const counts = { paroki_diisi: 0, events_diisi: 0, subevent_dibuat: 0 };
-  let error: string | undefined;
+  const counts = { paroki_diisi: 0, events_diisi: 0, subevent_dibuat: 0, dilewati: 0 };
   try {
     await chunked(plan.penyelenggaraUpdates, sleep, async (b) => {
-      await src.update(T.penyelenggaraKep, b, new Set([F.penyelenggaraKep.paroki]));
-      counts.paroki_diisi += b.length;
+      const ok = await stillEmpty(src, T.penyelenggaraKep, F.penyelenggaraKep.paroki, b);
+      counts.dilewati += b.length - ok.length;
+      if (ok.length) await src.update(T.penyelenggaraKep, ok, new Set([F.penyelenggaraKep.paroki]));
+      counts.paroki_diisi += ok.length;
     });
     await chunked(plan.eventKepUpdates, sleep, async (b) => {
-      await src.update(T.eventKep, b);
-      counts.events_diisi += b.length;
+      const ok = await stillEmpty(src, T.eventKep, F.eventKep.events, b);
+      counts.dilewati += b.length - ok.length;
+      if (ok.length) await src.update(T.eventKep, ok);
+      counts.events_diisi += ok.length;
     });
     await chunked(plan.subEvents, sleep, async (b) => {
       await src.create(T.subEvent, b.map((s) => s.fields));
       counts.subevent_dibuat += b.length;
     });
   } catch (e) {
-    error = e instanceof Error ? e.message : "error";
+    return { counts, error: e instanceof Error ? e.message : "error" };
   }
-  // counts only, never names
+  return { counts };
+}
+
+/** Counts only, never names. Pelaku is an email field live, so it is the operator's email. */
+export async function writeApplyAudit(src: DataSource, actorEmail: string, r: ApplyResult): Promise<void> {
   await src.create(T.auditKep, [
     {
       [F.auditKep.aksi]: "legacy_map_apply",
-      [F.auditKep.pelaku]: "script:map-legacy",
-      [F.auditKep.targetId]: "legacy-map",
-      [F.auditKep.sesudah]: JSON.stringify({ ...counts, ...(error ? { gagal: true } : {}) }),
+      [F.auditKep.pelaku]: actorEmail,
+      [F.auditKep.targetId]: "map-legacy",
+      [F.auditKep.sesudah]: JSON.stringify({ ...r.counts, ...(r.error ? { gagal: true } : {}) }),
     },
   ]);
-  if (error) throw new Error(`Apply stopped part-way (${error}); counts: ${JSON.stringify(counts)}. Re-run is safe (idempotent).`);
-  return counts;
 }
 
 // ---- CLI ----
-export type Deps = { source?: DataSource; outDir?: string; sleep?: (ms: number) => Promise<void>; log?: (s: string) => void };
+export type Deps = { env?: Record<string, string | undefined>; source?: DataSource; outDir?: string; sleep?: (ms: number) => Promise<void>; log?: (s: string) => void };
 
 export async function main(argv: string[], deps: Deps = {}): Promise<number> {
   const log = deps.log ?? ((s: string) => console.log(s));
@@ -297,6 +334,11 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
   if (apply && flag("--dry-run")) { log("--apply and --dry-run are mutually exclusive"); return 2; }
   if (apply && !argv.includes("--confirm=YA")) { log("Refused: --apply needs --confirm=YA. Nothing was read or written."); return 2; }
   if (apply && (snapshot || deps.source?.kind === "snapshot")) { log("Refused: --apply cannot run from a snapshot."); return 2; }
+  const env = deps.env ?? process.env;
+  const actor = (env.MAP_LEGACY_ACTOR_EMAIL ?? "").trim();
+  if (apply && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(actor)) { log("Refused: --apply needs MAP_LEGACY_ACTOR_EMAIL set to a valid email (audit Pelaku)."); return 2; }
+  const expect = val("--expect-hash");
+  if (apply && !expect) { log("Refused: --apply needs --expect-hash=<hash> from the approved dry-run."); return 2; }
   if (flag("--from-snapshot") && !snapshot) { log("--from-snapshot needs a directory"); return 2; }
 
   let src: DataSource;
@@ -317,9 +359,26 @@ export async function main(argv: string[], deps: Deps = {}): Promise<number> {
     log(`Mode: ${apply ? "APPLY" : "dry-run"} (${src.kind}). cocok=${n("cocok")} tidak cocok=${n("tidak cocok")} duplikat=${n("duplikat")} rencana tulis=${n("rencana tulis")}`);
     log(`Planned: SubEvent baru=${plan.subEvents.length}, EventKEP.Events=${plan.eventKepUpdates.length}, Pengelenggara KEP.Paroki=${plan.penyelenggaraUpdates.length}`);
     log(`Report: ${join(outDir, "legacy-mapping.csv")}`);
+    log(`Plan hash: ${plan.hash}`);
     if (apply) {
-      const c = await applyPlan(src, plan, sleep);
-      log(`Applied: SubEvent dibuat=${c.subevent_dibuat}, Events diisi=${c.events_diisi}, Paroki diisi=${c.paroki_diisi}`);
+      if (plan.hash !== expect) { log("Refused: the plan changed since the approved dry-run (hash differs). Nothing was written."); return 2; }
+      const prior = await src.read(T.auditKep);
+      if (prior.some((r) => r.fields[F.auditKep.aksi] === "legacy_map_apply") && !flag("--rerun")) {
+        log("Refused: an earlier legacy_map_apply audit row exists. Add --rerun to run again (idempotent).");
+        return 2;
+      }
+      const res = await applyPlan(src, plan, sleep);
+      const c = res.counts;
+      log(`Applied: SubEvent dibuat=${c.subevent_dibuat}, Events diisi=${c.events_diisi}, Paroki diisi=${c.paroki_diisi}, dilewati=${c.dilewati}`);
+      if (res.error) log(`Error: stopped part-way (${res.error}). Re-run with --rerun and a fresh --expect-hash is safe.`);
+      let auditOk = true;
+      try {
+        await writeApplyAudit(src, actor, res);
+      } catch (e) {
+        auditOk = false;
+        log(`Error: audit row NOT written (${e instanceof Error ? e.message : "error"}). Counts above are the record.`);
+      }
+      if (res.error || !auditOk) return 1;
     }
     return 0;
   } catch (e) {

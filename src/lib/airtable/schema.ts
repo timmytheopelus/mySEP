@@ -183,7 +183,7 @@ export const ALLOWED: Record<string, Set<string>> = {
 export function pickAllowed(tableId: string, fields: Record<string, unknown>, extra?: Set<string>): Record<string, unknown> {
   const allowed = ALLOWED[tableId];
   const out: Record<string, unknown> = {};
-  if (!allowed) return out;
+  if (!allowed) throw new Error(`No write allowlist for table ${tableId}`); // fail closed
   for (const [k, v] of Object.entries(fields)) if (allowed.has(k) || extra?.has(k)) out[k] = v;
   return out;
 }
