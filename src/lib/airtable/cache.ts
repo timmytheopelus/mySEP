@@ -27,7 +27,10 @@ export function cachedList(table: string, fields: string[], filterByFormula?: st
   const key = `${table}|${fl.join(",")}|${filterByFormula ?? ""}`;
   const hit = tableCache.get(key);
   const now = Date.now();
-  const ttl = Math.min(o.ttlMs ?? TABLE_TTL_MS, o.maxAgeMs ?? Infinity);
+  // AIRTABLE_CACHE_TTL_MS can only SHORTEN every TTL (0 = no reuse across requests; in-flight reads still shared).
+  // Used by the Playwright suite, whose fake Airtable is reset between tests behind the app's back.
+  const cap = process.env.AIRTABLE_CACHE_TTL_MS === undefined || process.env.AIRTABLE_CACHE_TTL_MS === "" ? Infinity : Math.max(0, Number(process.env.AIRTABLE_CACHE_TTL_MS) || 0);
+  const ttl = Math.min(o.ttlMs ?? TABLE_TTL_MS, o.maxAgeMs ?? Infinity, cap);
   if (hit && hit.gen === genOf(table)) {
     if (hit.failedAt === undefined && (now - hit.at < ttl || hit.inflight)) return hit.p;
     if (hit.failedAt !== undefined && now - hit.failedAt < FAIL_BACKOFF_MS) return hit.p;

@@ -81,9 +81,14 @@ Jika satu variabel wajib kosong/salah, aplikasi menjawab 503 dan log menyebut na
 | `RESEND_API_KEY` | Wajib agar email (undangan, reset, konfirmasi) terkirim | <https://resend.com> → API Keys (izin "Sending access" saja) | `re_…` |
 | `MAIL_FROM` | Disarankan | Domain pengirim yang sudah diverifikasi di Resend | `KEP Keuskupan Bandung <kep@keuskupanbandung.org>` |
 | `REG_MIN_RESPONSE_MS` | Tidak (bawaan 6000) | — | `6000` (ms; menyamakan waktu jawab "baru"/"sudah terdaftar") |
-| `ABSEN_RECHECK_MS` | Tidak (bawaan 400) | — | `400` (ms jeda cek ulang absensi bersamaan) |
+| `ABSEN_RECHECK_MS` | Tidak (bawaan 0 = mati) | — | `0`; > 0 menambah satu baca ulang tertunda per tap (biaya Airtable 2x) |
+| `AIRTABLE_MAX_RPS` | Tidak (bawaan 4, maks. 5) | — | `4` (permintaan Airtable per detik **per instance**; nilai > 5 dipotong ke 5) |
+| `AIRTABLE_QUEUE_MAX` | Tidak (bawaan 40) | — | `40` (antrean permintaan per instance; penuh → 503 + Retry-After) |
+| `AIRTABLE_MAX_WAIT_MS` | Tidak (bawaan 30000) | — | `30000` (maks. tunggu satu permintaan: antrean + jeda 429 + ulang) |
+| `AIRTABLE_429_PAUSE_MS` | Tidak (bawaan 30000) | — | Jeda seluruh proses setelah 429 bila Airtable tidak mengirim `Retry-After` |
+| `IMPORT_BUDGET_MS` | Tidak (bawaan 240000) | — | Batas waktu impor Excel; baris sisanya diminta diunggah ulang |
 | `ABSEN_SEMUA_BUDGET_MS` | Tidak (bawaan 45000) | — | `45000` (batas waktu "Tandai semua hadir" per panggilan) |
-| `KEP_E2E_MODE` | **Jangan pernah diisi** di server sungguhan | Hanya Playwright lokal/CI | — (diabaikan di Vercel) |
+| `KEP_E2E_MODE` | **Jangan pernah diisi** di server sungguhan | Hanya Playwright lokal/CI | — (hanya berlaku bila `AIRTABLE_API_URL` dan `APP_BASE_URL` loopback dan tanpa `VERCEL`/`VERCEL_ENV`/`VERCEL_URL`; selain itu di produksi → 503) |
 
 Catatan Resend (penting):
 - Verifikasi domain pengirim (Resend → Domains → Add → pasang record DNS SPF/DKIM yang diminta).
@@ -177,10 +182,10 @@ security → Secret scanning** dan **Dependabot alerts**.
 |---|---|---|
 | `POST /api/daftar/[token]` | Jawaban ditahan `REG_MIN_RESPONSE_MS` (6 s) + ±12 panggilan Airtable → butuh **≥ 7 s** | `maxDuration = 30` |
 | `POST /api/kep/[id]/absen/[sid]/semua` | Maks 60 peserta per panggilan, anggaran 45 s | `maxDuration = 60` |
-| `POST /api/kep/[id]/import/commit` | Sampai 500 baris + email, satu per satu | `maxDuration = 300` |
+| `POST /api/kep/[id]/import/commit` | Maks. **100 baris** per berkas; terburuk ±7 panggilan Airtable per baris (cache hangat) → ±703 panggilan ≈ 176 s pada 4 req/s; `IMPORT_BUDGET_MS` 240 s menghentikan baris baru sebelum batas | `maxDuration = 300` |
 
 Pastikan paket Vercel Anda mengizinkan durasi tersebut (Settings → Functions; Fluid Compute disarankan aktif). Jika
-paket membatasi lebih pendek, unggah Excel dalam beberapa file kecil (≤ 100 baris) dan ulangi "Tandai semua" sampai
+paket membatasi lebih pendek, unggah Excel dalam beberapa file lebih kecil (mis. ≤ 50 baris untuk 120 s) dan ulangi "Tandai semua" sampai
 sisa = 0 (UI sudah melakukannya otomatis).
 
 ## 10. Cadangan (backup)
@@ -252,10 +257,22 @@ Gerbang pengaman (tidak bisa dilewati):
 - Pengikatan Google pertama punya celah balapan sangat kecil (diterima; hanya untuk domain yang dijamin Google).
 - Kunci anti-dobel (pembuatan KEP, keputusan, impor, absensi per peserta) bersifat per instance server, bukan lintas
   instance; Airtable menjadi pemutus akhir.
-- Cache data KEP per instance (≤ 60 s); perubahan dari Airtable langsung bisa terlambat tampil.
-- Banyak bacaan Airtable membaca seluruh tabel (cocok untuk skala keuskupan sekarang). Batas Airtable 5 permintaan/detik
-  per base; aplikasi membatasi: GET API 600/10 menit per akun, halaman pendaftaran 120/10 menit per IP dan 600/10 menit
-  per link, pendaftaran 10/jam per IP. Halaman aplikasi (server) untuk pengguna yang login tidak dibatasi terpisah.
+- Cache baca Airtable per proses (cakupan KEP/penyelenggara 45 s, peserta per KEP 15 s, nama acara 10 menit).
+  Penulisan lewat aplikasi langsung membatalkan cache di proses itu; instance lain dan perubahan langsung di Airtable
+  tampil setelah TTL. Keputusan yang bergantung status (keputusan SEP, kunci jadwal) selalu membaca ulang EventKEP.
+- Batas Airtable 5 permintaan/detik **per base** (dibagi dengan integrasi BPK lain; 429 = jeda ±30 s untuk seluruh
+  base). Setiap proses aplikasi membatasi diri ke `AIRTABLE_MAX_RPS` (4/s, jendela geser), menjeda seluruh proses saat
+  429 sesuai `Retry-After`, dan menolak dengan 503 + Retry-After bila antrean penuh atau tunggu > 30 s (antrean absen
+  offline mengulang otomatis; 503 tidak pernah dibuang). Pembatas ini **per instance**: N instance hangat bisa mencapai
+  N × 4/s. Untuk acara besar, batasi Vercel "Max Instances" atau turunkan `AIRTABLE_MAX_RPS`.
+- Biaya per jalur (diukur di tests/kep/airtable-calls.test.ts pada ukuran base live): lembar absen 6 (dingin) / 1
+  (hangat); satu tap absen 4; "Tandai semua" 40 peserta 15; hub KEP 7 / 1; pendaftaran 10 / 7.
+- Halaman statistik publik tidak pernah menunggu Airtable: angka dari memori proses atau Upstash (maks. 24 jam);
+  instance dingin menampilkan teks cadangan dan menyegarkan di latar (maks. 5 penyegaran per IP per 10 menit).
+- Batas baca: GET API dan halaman aplikasi berbagi 600/10 menit per akun (lebih → 429 / halaman `/batas`), halaman
+  pendaftaran 120/10 menit per IP dan 600/10 menit per link, pendaftaran 10/jam per IP.
+- Sesi 15 menit geser: halaman yang dibuka diperpanjang oleh ping `/api/sesi/ping` tiap 5 menit selama tab terlihat
+  dan ada aktivitas (klik/tombol) dalam 5 menit terakhir; tidak pernah melewati batas 8 jam. Tab diam → keluar.
 - Pencabutan link pendaftaran bergantung pada baris AuditKEP (bagian 7).
 - Tanpa `RESEND_API_KEY` email tidak terkirim (hanya dicatat di log).
 

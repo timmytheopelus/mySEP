@@ -2,12 +2,19 @@ import type { AtRecord } from "@/lib/airtable/client";
 import { T } from "@/lib/airtable/schema";
 
 /** State of the shared read cache (no client import, so test helpers can reset it). Logic: ./cache.ts */
-export const tableGen = new Map<string, number>();
-export const genOf = (t: string) => tableGen.get(t) ?? 0;
 export type Entry = { at: number; gen: number; p: Promise<AtRecord[]>; failedAt?: number; inflight?: boolean };
-export const tableCache = new Map<string, Entry>();
-export const lastGood = new Map<string, AtRecord[]>();
-export const listeners = new Set<(table?: string) => void>();
+type State = { tableGen: Map<string, number>; tableCache: Map<string, Entry>; lastGood: Map<string, AtRecord[]>; listeners: Set<(table?: string) => void> };
+// One state per PROCESS, not per module instance: the production build bundles route handlers and server
+// components separately (two copies of this module in one process), and an API write must invalidate what the
+// pages read. globalThis + Symbol.for is shared by both copies.
+const KEY = Symbol.for("kep.airtable.readCache.v1");
+const G = globalThis as unknown as Record<symbol, State | undefined>;
+const state: State = (G[KEY] ??= { tableGen: new Map(), tableCache: new Map(), lastGood: new Map(), listeners: new Set() });
+export const tableGen = state.tableGen;
+export const genOf = (t: string) => tableGen.get(t) ?? 0;
+export const tableCache = state.tableCache;
+export const lastGood = state.lastGood;
+export const listeners = state.listeners;
 
 /** Age (ms) of the cached entry for this exact read, or Infinity when there is none. */
 export function cacheAge(table: string, fields: string[], filterByFormula?: string): number {

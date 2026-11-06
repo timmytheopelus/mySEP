@@ -70,14 +70,19 @@ const maxWaitMs = () => envNum("AIRTABLE_MAX_WAIT_MS", 30_000);
 const pauseMs = () => envNum("AIRTABLE_429_PAUSE_MS", 30_000);
 
 /** Sliding window: at most maxRps() request starts in any 1000 ms (a plain bucket could allow 2x in a window). */
-const bucket = { starts: [] as number[], pausedUntil: 0 };
-const waiters: { resolve: () => void; reject: (e: unknown) => void; deadline: number }[] = [];
-let pumping: ReturnType<typeof setTimeout> | null = null;
+type Waiter = { resolve: () => void; reject: (e: unknown) => void; deadline: number };
+type Throttle = { bucket: { starts: number[]; pausedUntil: number }; waiters: Waiter[]; pumping: ReturnType<typeof setTimeout> | null };
+// Process-wide (not per module copy: route handlers and server components are bundled separately in production).
+const TKEY = Symbol.for("kep.airtable.throttle.v1");
+const TG = globalThis as unknown as Record<symbol, Throttle | undefined>;
+const T_ = (TG[TKEY] ??= { bucket: { starts: [], pausedUntil: 0 }, waiters: [], pumping: null });
+const bucket = T_.bucket;
+const waiters = T_.waiters;
 
 const busy = (retryAfterS: number) => new AirtableError("Airtable request failed: busy (local queue full or wait budget spent)", 503, true, Math.max(1, Math.ceil(retryAfterS)));
 
 function pump() {
-  pumping = null;
+  T_.pumping = null;
   const now = Date.now();
   const rps = maxRps();
   while (bucket.starts.length && now - bucket.starts[0] >= 1000) bucket.starts.shift();
@@ -95,7 +100,7 @@ function pump() {
   }
   if (waiters.length) {
     const wait = now < bucket.pausedUntil ? bucket.pausedUntil - now : bucket.starts[0] + 1000 - now;
-    pumping = setTimeout(pump, Math.max(1, Math.min(wait, waiters[0].deadline - now + 1)));
+    T_.pumping = setTimeout(pump, Math.max(1, Math.min(wait, waiters[0].deadline - now + 1)));
   }
 }
 
@@ -106,14 +111,14 @@ function acquire(deadline: number): Promise<void> {
   if (waiters.length >= maxQueue()) return Promise.reject(busy(Math.max(1, waiters.length / maxRps())));
   return new Promise<void>((resolve, reject) => {
     waiters.push({ resolve, reject, deadline });
-    if (!pumping) pump();
+    if (!T_.pumping) pump();
   });
 }
 
 /** Test hook: empties the bucket state (pending waiters are rejected). */
 export function resetAirtableThrottle(): void {
-  if (pumping) clearTimeout(pumping);
-  pumping = null;
+  if (T_.pumping) clearTimeout(T_.pumping);
+  T_.pumping = null;
   for (const w of waiters.splice(0)) w.reject(busy(1));
   bucket.starts = [];
   bucket.pausedUntil = 0;
