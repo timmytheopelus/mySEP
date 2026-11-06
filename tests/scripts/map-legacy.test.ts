@@ -45,7 +45,7 @@ function memorySource(kind: "live" | "snapshot" = "live"): DataSource {
 
 let out: string;
 const run = (argv: string[], source?: DataSource) => main(argv, { source, outDir: out, sleep: async () => {}, log: () => {} });
-const csv = () => readFileSync(join(out, "legacy-mapping.csv"), "utf8");
+const csv = () => readFileSync(join(out, "legacy-mapping.csv"), "utf8").replace(/^\ufeff/, "");
 const lines = () => csv().split("\r\n").filter(Boolean);
 const withJenis = (j: string) => lines().filter((l) => l.startsWith(j + ","));
 
