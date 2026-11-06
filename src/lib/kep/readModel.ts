@@ -188,7 +188,6 @@ const HEALTH = [
   F.pendaftaranEvents.obatRutin,
   F.pendaftaranEvents.kontakDarurat,
 ];
-const STATUS_OK = new Set(["Diajukan", "Disetujui", "Ditolak"]);
 const INACTIVE = new Set(["batal", "dobel daftar"]);
 const isInactive = (r: AtRecord) => INACTIVE.has(str(r.fields[F.pendaftaranEvents.statusPendaftaran]).toLowerCase());
 const isPanitia = (r: AtRecord) => str(r.fields[F.pendaftaranEvents.kategoriKepesertaan]).toLowerCase() === "panitia";
