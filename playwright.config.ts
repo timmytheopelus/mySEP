@@ -27,6 +27,10 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,
       env: {
+        // Production build against the local fake Airtable: KEP_E2E_MODE=1 allows ONLY the API URL override, the
+        // in-memory limiter and http://localhost (src/lib/config/prodEnv.ts); it is ignored on Vercel.
+        KEP_E2E_MODE: "1",
+        MFA_ENC_KEY: "ZTJlLW1mYS1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcyE=",
         AIRTABLE_API_URL: `http://127.0.0.1:${MOCK_PORT}`,
         AIRTABLE_TOKEN: "e2e-token",
         AIRTABLE_BASE_ID: "appE2E",

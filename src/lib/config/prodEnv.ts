@@ -62,7 +62,7 @@ export function productionConfigProblems(env: Env = process.env): string[] {
   if (!env.MFA_ENC_KEY || !/^[A-Za-z0-9+/]{43}=$/.test(env.MFA_ENC_KEY)) p.push("MFA_ENC_KEY (wajib, base64 dari 32 byte)");
   if (!env.REG_TOKEN_SECRET || new TextEncoder().encode(env.REG_TOKEN_SECRET).length < 32) p.push("REG_TOKEN_SECRET (wajib, >= 32 byte)");
   if (!env.AIRTABLE_TOKEN) p.push("AIRTABLE_TOKEN (wajib)");
-  if (env.AIRTABLE_BASE_ID && !/^app[A-Za-z0-9]{14}$/.test(env.AIRTABLE_BASE_ID)) p.push("AIRTABLE_BASE_ID (format tidak valid)");
+  if (!e2eRelaxed(env) && env.AIRTABLE_BASE_ID && !/^app[A-Za-z0-9]{14}$/.test(env.AIRTABLE_BASE_ID)) p.push("AIRTABLE_BASE_ID (format tidak valid)");
   if (!e2eRelaxed(env) && env.AIRTABLE_API_URL) p.push("AIRTABLE_API_URL (tidak boleh diisi di produksi)");
   if (!env.APP_BASE_URL) p.push("APP_BASE_URL (wajib)");
   const a = originProblem("APP_BASE_URL", env.APP_BASE_URL, env);
