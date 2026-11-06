@@ -1,0 +1,49 @@
+.page { max-width: 40rem; margin: 0 auto; padding: 1rem 1rem 3rem; font-family: system-ui, sans-serif; color: #111; display: flex; flex-direction: column; gap: 1rem; }
+.back { display: inline-flex; align-items: center; min-height: 2.75rem; color: #0b3d91; font-weight: 600; text-decoration: underline; }
+.title { margin: 0; font-size: 1.4rem; overflow-wrap: anywhere; }
+.meta { margin: 0; color: #444; }
+.badge { display: inline-block; font-size: 0.9rem; font-weight: 700; border: 1px solid #444; border-radius: 999px; padding: 0.1rem 0.6rem; }
+.card { border: 1px solid #ccc; border-radius: 0.5rem; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.h2 { margin: 0; font-size: 1.1rem; }
+.stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; margin: 0; }
+.stat { border: 1px solid #ddd; border-radius: 0.5rem; padding: 0.5rem 0.7rem; }
+.stat dt { font-size: 0.9rem; color: #444; }
+.stat dd { margin: 0; font-size: 1.5rem; font-weight: 700; }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.row { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.7rem; border: 1px solid #ddd; border-radius: 0.5rem; min-height: 2.75rem; }
+.rowToday { border: 2px solid #0b3d91; background: #eef3fc; }
+.rowTitle { font-weight: 700; overflow-wrap: anywhere; }
+.rowMeta { font-size: 0.95rem; color: #333; }
+.peserta { display: flex; justify-content: space-between; gap: 0.5rem; align-items: center; padding: 0.5rem 0.7rem; border: 1px solid #ddd; border-radius: 0.5rem; min-height: 2.75rem; }
+.pesertaMuted { opacity: 0.75; background: #f4f4f4; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.btn, .btnPrimary, .btnDanger, .linkBtn { display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem; min-width: 2.75rem; padding: 0 1.1rem; font: inherit; font-weight: 600; border-radius: 0.4rem; cursor: pointer; text-decoration: none; box-sizing: border-box; }
+.btn, .linkBtn { background: #fff; color: #0b3d91; border: 2px solid #0b3d91; }
+.btnPrimary { background: #0b3d91; color: #fff; border: 2px solid #0b3d91; }
+.btnDanger { background: #7a0016; color: #fff; border: 2px solid #7a0016; }
+.btn:focus-visible, .btnPrimary:focus-visible, .btnDanger:focus-visible, .linkBtn:focus-visible, .input:focus-visible, .textarea:focus-visible { outline: 3px solid #0b57d0; outline-offset: 2px; }
+.btn:disabled, .btnPrimary:disabled, .btnDanger:disabled { opacity: 0.6; cursor: wait; }
+.field { display: flex; flex-direction: column; gap: 0.35rem; font-weight: 600; }
+.input, .textarea { min-height: 2.75rem; padding: 0.5rem 0.75rem; font-size: 1rem; font-weight: 400; width: 100%; box-sizing: border-box; }
+.textarea { min-height: 5.5rem; }
+.hint { font-weight: 400; color: #444; font-size: 0.95rem; margin: 0; }
+.note { background: #f4f6fa; border-radius: 0.5rem; padding: 0.75rem 1rem; font-size: 0.95rem; margin: 0; }
+.fieldError { font-weight: 400; color: #b00020; font-size: 0.9rem; }
+.error { color: #b00020; margin: 0; }
+.ok { color: #1b5e20; margin: 0; }
+.ok:empty, .error:empty { display: none; }
+.warn { border: 2px solid #8a4b00; background: #fff4e0; color: #3d2300; border-radius: 0.5rem; padding: 0.7rem 0.9rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.warn p { margin: 0; }
+.qr { align-self: flex-start; max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 0.4rem; background: #fff; }
+.form { display: flex; flex-direction: column; gap: 1rem; margin-top: 0.75rem; }
+.fieldset { border: 1px solid #ccc; border-radius: 0.5rem; padding: 0.75rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.9rem; margin: 0; min-width: 0; }
+.legend { font-weight: 700; padding: 0 0.35rem; }
+.group { display: flex; flex-direction: column; gap: 0.9rem; border-top: 1px solid #ddd; padding-top: 0.75rem; }
+.summary { border: 2px solid #b00020; border-radius: 0.5rem; padding: 0.5rem 1rem; }
+.summary[hidden] { display: none; }
+.summaryToggle { min-height: 2.75rem; display: flex; align-items: center; font-weight: 700; cursor: pointer; }
+.details { border: 1px solid #ccc; border-radius: 0.5rem; padding: 0 1rem 1rem; }
+.consent { display: flex; gap: 0.6rem; align-items: flex-start; font-weight: 600; min-height: 2.75rem; }
+.checkbox { width: 1.5rem; height: 1.5rem; flex: none; margin-top: 0.1rem; }
+.muted { color: #555; }
+.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

@@ -109,8 +109,9 @@ test.describe("tautan pendaftaran", () => {
     await expect(pub.getByRole("heading", { name: "Pendaftaran peserta" })).toBeVisible();
 
     // ...until the PIC rotates it
-    page.on("dialog", (d) => void d.accept());
     await box.getByRole("button", { name: /buat tautan baru/i }).click();
+    await expect(box).toContainText(/berhenti berfungsi/i);
+    await box.getByRole("button", { name: /ya, cabut tautan lama/i }).click();
     await expect(input).not.toHaveValue(before);
     const after = await input.inputValue();
     await pub.goto(before);
@@ -159,7 +160,7 @@ test.describe("tambah peserta manual", () => {
     await page.goto(`/kep/${KEP_A}`);
     await page.getByRole("button", { name: /tambah peserta/i }).click();
     const f = await fill(page, "Maria Sehat");
-    await f.getByText("Data kesehatan").click();
+    await f.locator("summary").click();
     await f.getByLabel("Riwayat alergi").fill("Udang");
     const consent = f.getByLabel(/peserta telah menyetujui/i);
     await expect(consent).toBeVisible();
@@ -182,13 +183,17 @@ test.describe("jadwal dan pewarta", () => {
     const rows = page.getByTestId("jadwal-item");
     await expect(rows).toHaveCount(3);
     const first = rows.first();
+    await expect(first).toContainText("belum ditugaskan");
+    await first.getByRole("button", { name: /ubah pewarta/i }).click();
     await expect(first.getByRole("checkbox", { name: "Pewarta Pensiun" })).toHaveCount(0);
     await first.getByRole("checkbox", { name: "Pewarta Satu" }).check();
-    await first.getByRole("button", { name: /simpan/i }).click();
+    await first.getByRole("button", { name: /^simpan/i }).click();
     await expect(first.getByRole("status")).toContainText(/tersimpan/i);
     await page.reload();
+    await expect(page.getByTestId("jadwal-item").first()).toContainText("Pewarta: Pewarta Satu");
+    await expect(page.getByTestId("jadwal-item").nth(1)).toContainText("belum ditugaskan");
+    await page.getByTestId("jadwal-item").first().getByRole("button", { name: /ubah pewarta/i }).click();
     await expect(page.getByTestId("jadwal-item").first().getByRole("checkbox", { name: "Pewarta Satu" })).toBeChecked();
-    await expect(page.getByTestId("jadwal-item").nth(1).getByRole("checkbox", { name: "Pewarta Satu" })).not.toBeChecked();
     // the hub shows that pertemuan 1 now has a pewarta
     await page.goto(`/kep/${KEP_A}`);
     await expect(page.getByTestId("pertemuan-item").first()).toContainText(/pewarta/i);

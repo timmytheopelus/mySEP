@@ -320,7 +320,7 @@ describe("routes", () => {
   it("ADMIN success sets the session cookie and redirects to a fixed destination", async () => {
     await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
     const res = await finishFlow({ email: "Budi@Gmail.com" });
-    expect(res.headers.get("location")).toBe("https://kep.example.org/");
+    expect(res.headers.get("location")).toBe("https://kep.example.org/kep");
     const c = res.headers.getSetCookie();
     const sess = c.find((x) => x.startsWith("__Host-kep_session="))!;
     expect(sess).toMatch(/HttpOnly/);
@@ -338,7 +338,7 @@ describe("routes", () => {
     nextIdToken = await mint({ nonce: flow.nonce, email: "budi@gmail.com" });
     const a = await callback(reqGet("/api/auth/google/callback?" + q, s.cookie));
     const b = await callback(reqGet("/api/auth/google/callback?" + q, s.cookie));
-    expect(a.headers.get("location")).toBe("https://kep.example.org/");
+    expect(a.headers.get("location")).toBe("https://kep.example.org/kep");
     expect(b.headers.get("location")).toBe("https://kep.example.org/login?error=google");
   });
 

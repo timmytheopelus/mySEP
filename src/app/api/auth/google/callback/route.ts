@@ -91,7 +91,7 @@ export async function GET(req: Request): Promise<Response> {
       { accountId: acc.id, email: acc.email, role: acc.role, parokiId: acc.parokiId },
       { amr: ["google"] },
     );
-    return redirect("/", [clearFlow(), sessionCookie(session)]);
+    return redirect("/kep", [clearFlow(), sessionCookie(session)]);
   } catch {
     console.error("google sso callback failed");
     return failure();

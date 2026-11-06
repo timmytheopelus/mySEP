@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { readSession } from "@/lib/auth/session";
+import { pengalamanPewarta } from "@/lib/pewarta/pengalaman";
 import { filterPewarta, listPewarta } from "@/lib/pewarta/profile";
 import styles from "./pewarta.module.css";
 
@@ -18,6 +19,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
   const all = await listPewarta(session);
   const babs = [...new Set(all.flatMap((c) => c.babs))].sort();
   const shown = filterPewarta(all, q);
+  // Aggregate only (count of KEP pertemuan per pewarta); the page still works without it.
+  const pengalaman = await pengalamanPewarta(session).catch(() => new Map<string, number>());
   return (
     <main className={styles.main}>
       <h1>Pewarta</h1>
@@ -57,6 +60,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
                 <span>
                   <h2 className={styles.nama}>{c.nama}</h2>
                   {c.babs.length > 0 && <p className={styles.meta}>{c.babs.join(", ")}</p>}
+                  {(pengalaman.get(c.id) ?? 0) > 0 && <p className={styles.meta}>Mengajar di {pengalaman.get(c.id)} pertemuan KEP</p>}
                 </span>
               </Link>
             </li>

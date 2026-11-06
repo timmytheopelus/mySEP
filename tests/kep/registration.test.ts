@@ -183,9 +183,9 @@ describe("registration token", () => {
   it("only signs well-formed record ids", () => {
     expect(() => signRegistrationToken("not an id")).toThrow();
   });
-  it("carries no personal data: payload is the event id and a version only", () => {
+  it("carries no personal data: payload is event id, version, issued-at and expiry only", () => {
     const payload = JSON.parse(Buffer.from(signRegistrationToken(EV).split(".")[0], "base64url").toString());
-    expect(Object.keys(payload).sort()).toEqual(["e", "v"]);
+    expect(Object.keys(payload).sort()).toEqual(["e", "i", "v", "x"]);
   });
 });
 

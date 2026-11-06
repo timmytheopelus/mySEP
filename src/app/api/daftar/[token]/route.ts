@@ -2,7 +2,7 @@ import { runInBackground } from "@/lib/background";
 import { guardPost, clientIp, json, readBody, serverError, tooMany } from "@/lib/http/auth-http";
 import { HttpError } from "@/lib/http/errors";
 import { notAvailable, responseFloorMs, validationError } from "@/lib/http/registration-http";
-import { PesertaInput, RegistrationClosedError, RegistrationInputError, registerPeserta, verifyRegistrationToken } from "@/lib/kep/registration";
+import { PesertaInput, RegistrationClosedError, RegistrationInputError, registerPeserta, verifyRegistrationTokenCurrent } from "@/lib/kep/registration";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 
@@ -29,7 +29,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ token: string 
     const ipLim = await rateLimit(limitKey("daftar-ip", ip), IP_LIMIT, HOUR);
     if (!ipLim.ok) return tooMany(ipLim.retryAfter);
 
-    const t = verifyRegistrationToken(token);
+    const t = await verifyRegistrationTokenCurrent(token);
     if (!t) return notAvailable();
 
     const { turnstileToken, ...rest } = await readBody(req);

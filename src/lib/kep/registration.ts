@@ -34,8 +34,12 @@ export function normalizeWa(raw: string): string | null {
 // Registration token: base64url({e: Events record id, v: version}) "." base64url(HMAC-SHA256)
 // Bumping TOKEN_VERSION invalidates every issued link. Carries no personal data.
 // ---------------------------------------------------------------------------------------------
-const TOKEN_VERSION = 1;
+/** First link version. A rotation marker (AuditKEP "link_daftar_rotasi") raises it; older links then stop working. */
+const BASE_LINK_VERSION = 1;
 const MAX_TOKEN_LEN = 300;
+const DAY_MS = 86_400_000;
+export const TOKEN_TTL_DAYS = 120;
+export const LINK_ROTASI = "link_daftar_rotasi";
 
 function tokenSecret(): Buffer | null {
   const s = process.env.REG_TOKEN_SECRET;
@@ -43,15 +47,35 @@ function tokenSecret(): Buffer | null {
 }
 const mac = (secret: Buffer, payload: string) => createHmac("sha256", secret).update(payload).digest();
 
-export function signRegistrationToken(eventId: string): string {
+/** A public link lives 120 days, or until the end of Tanggal Selesai (WIB), whichever comes first. */
+export function registrationTokenExpiry(now: Date, tanggalSelesai?: string | null): Date {
+  const cap = new Date(now.getTime() + TOKEN_TTL_DAYS * DAY_MS);
+  const m = typeof tanggalSelesai === "string" ? /^(\d{4}-\d{2}-\d{2})/.exec(tanggalSelesai) : null;
+  if (!m) return cap;
+  const end = new Date(`${m[1]}T23:59:59.999+07:00`);
+  return Number.isNaN(end.getTime()) || end.getTime() > cap.getTime() ? cap : end;
+}
+
+/**
+ * Payload: event id `e`, link version `v` (rotation counter), issued-at `i` and expiry `x` (epoch seconds).
+ * No personal data. Tokens issued before expiry/rotation existed ({e, v:1}) keep verifying.
+ */
+export function signRegistrationToken(eventId: string, opts: { version?: number; expiresAt?: Date; now?: Date } = {}): string {
   if (typeof eventId !== "string" || !REC_ID.test(eventId)) throw new Error("Invalid event id");
   const secret = tokenSecret();
   if (!secret) throw new Error("REG_TOKEN_SECRET must be at least 32 bytes");
-  const payload = Buffer.from(JSON.stringify({ e: eventId, v: TOKEN_VERSION })).toString("base64url");
+  const version = opts.version ?? BASE_LINK_VERSION;
+  if (!Number.isInteger(version) || version < 1) throw new Error("Invalid link version");
+  const now = opts.now ?? new Date();
+  const exp = opts.expiresAt ?? registrationTokenExpiry(now);
+  const payload = Buffer.from(
+    JSON.stringify({ e: eventId, v: version, i: Math.floor(now.getTime() / 1000), x: Math.floor(exp.getTime() / 1000) }),
+  ).toString("base64url");
   return `${payload}.${mac(secret, payload).toString("base64url")}`;
 }
 
-export function verifyRegistrationToken(token: string): { eventId: string } | null {
+/** Signature, shape and expiry only (no I/O). */
+function parseRegistrationToken(token: string, now: Date): { eventId: string; version: number } | null {
   try {
     const secret = tokenSecret();
     if (!secret || typeof token !== "string" || token.length === 0 || token.length > MAX_TOKEN_LEN) return null;
@@ -60,12 +84,47 @@ export function verifyRegistrationToken(token: string): { eventId: string } | nu
     const given = Buffer.from(parts[1], "base64url");
     const expected = mac(secret, parts[0]);
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-    const p = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")) as { e?: unknown; v?: unknown };
-    if (p.v !== TOKEN_VERSION || typeof p.e !== "string" || !REC_ID.test(p.e)) return null;
-    return { eventId: p.e };
+    const p = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")) as { e?: unknown; v?: unknown; x?: unknown };
+    if (typeof p.e !== "string" || !REC_ID.test(p.e)) return null;
+    if (typeof p.v !== "number" || !Number.isInteger(p.v) || p.v < 1) return null;
+    if (p.x !== undefined && (typeof p.x !== "number" || !Number.isFinite(p.x) || p.x * 1000 <= now.getTime())) return null;
+    return { eventId: p.e, version: p.v };
   } catch {
     return null;
   }
+}
+
+export function verifyRegistrationToken(token: string, now: Date = new Date()): { eventId: string } | null {
+  const t = parseRegistrationToken(token, now);
+  return t ? { eventId: t.eventId } : null;
+}
+
+/** Highest rotation version recorded for this event (the order of AuditKEP rows does not matter). */
+export async function currentLinkVersion(eventId: string): Promise<number> {
+  if (typeof eventId !== "string" || !REC_ID.test(eventId)) return BASE_LINK_VERSION;
+  const AU = F.auditKep;
+  const rows = await listRecords(T.auditKep, {
+    fields: [AU.aksi, AU.targetId, AU.sesudah],
+    filterByFormula: `AND({${AU.aksi}}="${LINK_ROTASI}",{${AU.targetId}}="${eventId}")`,
+  });
+  let v = BASE_LINK_VERSION;
+  for (const r of rows) {
+    if (r.fields[AU.aksi] !== LINK_ROTASI || r.fields[AU.targetId] !== eventId) continue;
+    try {
+      const n = (JSON.parse(String(r.fields[AU.sesudah] ?? "")) as { v?: unknown }).v;
+      if (typeof n === "number" && Number.isInteger(n) && n > v) v = n;
+    } catch {
+      /* not one of ours */
+    }
+  }
+  return v;
+}
+
+/** Public entry points use this: valid signature, not expired, and not older than the latest rotation. */
+export async function verifyRegistrationTokenCurrent(token: string, now: Date = new Date()): Promise<{ eventId: string } | null> {
+  const t = parseRegistrationToken(token, now);
+  if (!t) return null;
+  return t.version >= (await currentLinkVersion(t.eventId)) ? { eventId: t.eventId } : null;
 }
 
 // ---------------------------------------------------------------------------------------------

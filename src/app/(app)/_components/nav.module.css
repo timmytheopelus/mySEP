@@ -1,0 +1,9 @@
+.nav { background: #0b3d91; font-family: system-ui, sans-serif; }
+.list { list-style: none; margin: 0 auto; padding: 0 0.5rem; max-width: 52rem; display: flex; flex-wrap: wrap; align-items: stretch; }
+.list li { display: flex; }
+.link { display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 0.85rem; color: #fff; font: inherit; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; text-decoration: none; cursor: pointer; }
+.link:hover { background: rgba(255, 255, 255, 0.12); }
+.link[aria-current="page"] { border-bottom-color: #fff; }
+.link:focus-visible { outline: 3px solid #fff; outline-offset: -3px; }
+.link:disabled { opacity: 0.7; cursor: wait; }
+.keluar { margin-left: auto; }

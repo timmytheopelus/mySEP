@@ -3,7 +3,7 @@
   "short_name": "Absen KEP",
   "description": "Absensi peserta KEP yang cepat, juga saat sinyal lemah.",
   "lang": "id",
-  "start_url": "/",
+  "start_url": "/kep",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",

@@ -27,7 +27,15 @@ export const POST = withAuth<{ id: string }>(
     try {
       await resolveOpenKep(eventId);
       // Audit first (no personal data), abort when it cannot be written.
-      await logAudit({ actorEmail: session.email, action: "peserta_manual_daftar", targetId: params.id });
+      // The PIC records the participant's health consent on their behalf; the audit says so (flag only, no health text).
+      const d = parsed.data;
+      const hasHealth = [d.riwayatPenyakit, d.riwayatAlergi, d.obatRutin].some((x) => !!x);
+      await logAudit({
+        actorEmail: session.email,
+        action: "peserta_manual_daftar",
+        targetId: params.id,
+        after: { persetujuanKesehatan: hasHealth ? "dicatat_pic" : "tidak_ada" },
+      });
       const r = await registerPeserta(eventId, parsed.data, { actorEmail: session.email });
       try {
         await logAudit({ actorEmail: session.email, action: "peserta_manual_selesai", targetId: params.id, after: { status: r.status, pendaftaranId: r.pendaftaranId } });

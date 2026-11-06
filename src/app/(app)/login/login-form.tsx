@@ -47,18 +47,18 @@ export default function LoginForm({ initial = {} }: { initial?: Initial }) {
     try {
       if (step === "enroll") {
         const r = await post("/api/auth/mfa/enroll", { code });
-        if (r.data.ok) return void router.replace("/");
+        if (r.data.ok) return void router.replace("/kep");
         setError(r.data.error ?? "Gagal");
         return;
       }
       if (step === "mfa" && viaGoogle) {
         const r = await post("/api/auth/google/mfa", { code });
-        if (r.data.ok) return void router.replace("/");
+        if (r.data.ok) return void router.replace("/kep");
         setError(r.data.error ?? "Gagal");
         return;
       }
       const r = await post("/api/auth/login", { email, password, ...(step === "mfa" ? { totp: code } : {}) });
-      if (r.data.ok) return void router.replace("/");
+      if (r.data.ok) return void router.replace("/kep");
       if (r.data.next === "mfa") return void (setStep("mfa"), setCode(""));
       if (r.data.next === "mfa_enroll") {
         const s = await post("/api/auth/mfa/enroll", {});

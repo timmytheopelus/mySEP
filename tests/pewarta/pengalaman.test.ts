@@ -14,16 +14,19 @@ const noParoki: Session = { accountId: "recPIC0000000002", email: "p2@x.id", rol
 
 beforeEach(() => {
   resetStore();
+  store[T.eventKep] = [{ id: "recKEP1", fields: { [F.eventKep.events]: ["recEV1"] } }];
+  const sub = (id: string, acara: string, pengajar?: string[]) => ({ id, fields: { [F.subEvent.acara]: [acara], ...(pengajar ? { [F.subEvent.pengajar]: pengajar } : {}) } });
   store[T.subEvent] = [
-    { id: "recS1", fields: { [F.subEvent.pengajar]: ["recP1", "recP2"] } },
-    { id: "recS2", fields: { [F.subEvent.pengajar]: ["recP1"] } },
-    { id: "recS3", fields: { [F.subEvent.pengajar]: ["recP1", "recP1"] } },
-    { id: "recS4", fields: {} },
+    sub("recS1", "recEV1", ["recP1", "recP2"]),
+    sub("recS2", "recEV1", ["recP1"]),
+    sub("recS3", "recEV1", ["recP1", "recP1"]),
+    sub("recS4", "recEV1"),
+    sub("recS5", "recEVNONKEP", ["recP1", "recP3"]), // a non-KEP BPK event does not count
   ];
 });
 
 describe("pengalamanPewarta", () => {
-  it("counts the pertemuan each pewarta teaches (one per pertemuan), aggregates only", async () => {
+  it("counts the KEP pertemuan each pewarta teaches (one per pertemuan, non-KEP events ignored), aggregates only", async () => {
     const m = await pengalamanPewarta(sep);
     expect(m.get("recP1")).toBe(3);
     expect(m.get("recP2")).toBe(1);

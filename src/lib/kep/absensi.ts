@@ -147,7 +147,7 @@ async function pesertaRows(actor: Session, ctx: Ctx): Promise<AtRecord[]> {
 }
 
 /** Names by RECORD_ID() filter, at most NAME_CHUNK ids per request (no full table scan). */
-async function namesOf(teamIds: string[]): Promise<Map<string, string>> {
+export async function namesOf(teamIds: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const want = [...new Set(teamIds.filter((i) => REC_ID.test(i)))];
   for (let i = 0; i < want.length; i += NAME_CHUNK) {

@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import { listRecords } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
-import { RegistrationClosedError, resolveOpenKep, verifyRegistrationToken } from "@/lib/kep/registration";
+import { RegistrationClosedError, resolveOpenKep, verifyRegistrationTokenCurrent } from "@/lib/kep/registration";
 import DaftarForm from "./daftar-form";
 import styles from "./daftar.module.css";
 
@@ -9,7 +9,7 @@ export const metadata = { title: "Pendaftaran KEP", robots: { index: false, foll
 export const dynamic = "force-dynamic";
 
 async function load(token: string): Promise<{ eventId: string; nama: string } | null> {
-  const t = verifyRegistrationToken(token);
+  const t = await verifyRegistrationTokenCurrent(token);
   if (!t) return null;
   try {
     const kep = await resolveOpenKep(t.eventId);

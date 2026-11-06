@@ -47,8 +47,8 @@ async function call(body: unknown, o: { as?: Session; params: { id: string; sid:
   });
   return (pengajarRoute as unknown as (r: Request, c: unknown) => Promise<Response>)(req, { params: Promise.resolve(o.params) });
 }
-const set = (ids: unknown, as: Session | undefined = pic, extra: Record<string, unknown> = {}, params = { id: KEP, sid: S1 }) =>
-  call({ pengajarIds: ids, opId: "op-pengajar-0001", ...extra }, { as, params });
+const set = (ids: unknown, as: Session | null = pic, extra: Record<string, unknown> = {}, params = { id: KEP, sid: S1 }) =>
+  call({ pengajarIds: ids, opId: "op-pengajar-0001", ...extra }, { as: as ?? undefined, params });
 const linksOf = (sid: string) => store[T.subEvent].find((r) => r.id === sid)?.fields[F.subEvent.pengajar];
 const auditOf = (aksi: string) => (store[T.auditKep] ?? []).filter((r) => r.fields[AU.aksi] === aksi);
 
@@ -127,7 +127,7 @@ describe("POST /api/kep/[id]/subevent/[sid]/pengajar", () => {
     expect(linksOf(S1)).toBeUndefined();
   });
   it("401 anonymous, 403 SEP, 403 cross-site", async () => {
-    expect((await set([P1], undefined)).status).toBe(401);
+    expect((await set([P1], null)).status).toBe(401);
     expect((await set([P1], sep)).status).toBe(403);
     expect((await call({ pengajarIds: [P1], opId: "op-pengajar-0001" }, { as: pic, params: { id: KEP, sid: S1 }, headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403);
     expect(linksOf(S1)).toBeUndefined();
@@ -171,7 +171,7 @@ describe("getJadwal", () => {
     expect(j.pertemuan[1].pengajarIds).toEqual([P1]);
     expect(j.opsi.map((o) => o.id).sort()).toEqual([P1, P2]);
     expect(j.opsi.every((o) => Object.keys(o).sort().join() === "id,nama")).toBe(true);
-    expect(JSON.stringify(j)).not.toMatch(/hp|phone|wa/i);
+    expect(JSON.stringify(j)).not.toMatch(/nohp|phone|\b0?8\d{8}|\b628/i);
   });
   it("404 for another parish, 403 for SEP", async () => {
     await expect(getJadwal(admB, KEP)).rejects.toMatchObject({ status: 404 });
