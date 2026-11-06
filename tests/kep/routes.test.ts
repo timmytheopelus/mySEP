@@ -115,7 +115,9 @@ describe("decision route and queue", () => {
     expect((await call(decideRoute, { keputusan: "Ditolak", catatan: "" }, { as: sep, ...p })).status).toBe(422);
     expect((await call(decideRoute, { keputusan: "Lain" }, { as: sep, ...p })).status).toBe(422);
     expect((await call(decideRoute, { keputusan: "Disetujui", status: "x" }, { as: sep, ...p })).status).toBe(422);
-    expect((await call(decideRoute, { keputusan: "Disetujui", catatan: "ok" }, { as: sep, ...p })).status).toBe(200);
+    const ok = await call(decideRoute, { keputusan: "Disetujui", catatan: "ok" }, { as: sep, ...p });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).emailTerkirim).toBe(true);
     expect((await call(decideRoute, { keputusan: "Disetujui" }, { as: sep, ...p })).status).toBe(409);
     expect((await call(decideRoute, { keputusan: "Disetujui" }, { as: sep, params: { id: "recNOPE000000000" } })).status).toBe(404);
   });

@@ -8,7 +8,7 @@ vi.mock("@/lib/kep/readModel", () => ({ invalidateKepCache: vi.fn() }));
 import * as client from "@/lib/airtable/client";
 import { invalidateKepCache } from "@/lib/kep/readModel";
 import { KepPartialError, createKep } from "@/lib/kep/create";
-import { KEP_TEMPLATE } from "@/lib/kep/template";
+import { KEP_TEMPLATE, scheduleDates } from "@/lib/kep/template";
 import type { Session } from "@/lib/auth/session";
 
 const PA = "recPAROKIA0000001";
@@ -66,6 +66,13 @@ describe("createKep happy path", () => {
     expect(subs.every((s) => (s.fields[F.subEvent.acara] as string[])[0] === r.eventId)).toBe(true);
     expect(subs[0].fields[F.subEvent.tanggal]).toBe("2027-01-10");
     expect(subs[1].fields[F.subEvent.tanggal]).toBe("2027-01-17");
+    expect(kep[0].fields[F.eventKep.submittedBy]).toBe("pica@x.id");
+    expect(kep[0].fields[F.eventKep.angkatan]).toBe(9);
+    expect(kep[0].fields[F.eventKep.tanggalMulai]).toBe("2027-01-10");
+    expect(kep[0].fields[F.eventKep.tanggalSelesai]).toBe(scheduleDates("2027-01-10")[27]);
+    expect(kep[0].fields[F.eventKep.jenis]).toBe("KEP");
+    expect(org[0].fields[F.penyelenggaraKep.penyelenggara]).toBe("Pandu");
+    expect(org[0].fields[F.penyelenggaraKep.jenis]).toBe("KEP");
     expect(invalidateKepCache).toHaveBeenCalled();
   });
 
@@ -86,7 +93,9 @@ describe("createKep happy path", () => {
   it("sets restricted fields only through the trusted extra set, never from input", async () => {
     await createKep(picA, { ...input, penyelenggara: ["recEVIL0000000001"], statusPersetujuan: "Disetujui" } as never, { now: NOW });
     const kepCall = vi.mocked(client.createRecords).mock.calls.find((c) => c[0] === T.eventKep)!;
-    expect(kepCall[2]).toEqual(new Set([F.eventKep.statusPersetujuan, F.eventKep.penyelenggara]));
+    expect(kepCall[2]).toContain(F.eventKep.submittedBy);
+    expect(kepCall[2]).not.toContain(F.eventKep.catatanSep);
+    expect(kepCall[1][0][F.eventKep.submittedBy]).toBe("pica@x.id");
     expect(kepCall[1][0][F.eventKep.statusPersetujuan]).toBe("Diajukan");
     expect(rows(T.eventKep)[0].fields[F.eventKep.penyelenggara]).not.toContain("recEVIL0000000001");
     const orgCall = vi.mocked(client.createRecords).mock.calls.find((c) => c[0] === T.penyelenggaraKep)!;
@@ -121,6 +130,24 @@ describe("createKep validation (all before the first write)", () => {
     await createKep(picA, input, { now: NOW });
     const n = vi.mocked(client.createRecords).mock.calls.length;
     await expect(createKep(picA, { ...input, tanggalMulai: "2027-02-01" }, { now: NOW })).rejects.toMatchObject({ status: 409 });
+    expect(vi.mocked(client.createRecords).mock.calls.length).toBe(n);
+  });
+  it("a legacy EventKEP of the same organizer and angkatan (different Events name) -> 409", async () => {
+    store[T.penyelenggaraKep] = [{ id: "recORG0000000001", fields: { [F.penyelenggaraKep.paroki]: [PA] } }];
+    store[T.eventKep] = [{ id: "recKEPLEG000000001", fields: { [F.eventKep.angkatan]: 9, [F.eventKep.penyelenggara]: ["recORG0000000001"] } }];
+    await expect(createKep(picA, input, { now: NOW })).rejects.toMatchObject({ status: 409 });
+    expect(client.createRecords).not.toHaveBeenCalled();
+  });
+  it("same angkatan of another organizer is fine", async () => {
+    store[T.penyelenggaraKep] = [{ id: "recORGB000000001", fields: { [F.penyelenggaraKep.paroki]: [PB] } }];
+    store[T.eventKep] = [{ id: "recKEPOTH000000001", fields: { [F.eventKep.angkatan]: 9, [F.eventKep.penyelenggara]: ["recORGB000000001"] } }];
+    await expect(createKep(picA, input, { now: NOW })).resolves.toBeTruthy();
+  });
+  it("a retry after a fully successful create returns the existing ids without writing", async () => {
+    const a = await createKep(picA, input, { now: NOW });
+    const n = vi.mocked(client.createRecords).mock.calls.length;
+    const b = await createKep(picA, input, { now: NOW });
+    expect(b).toMatchObject({ eventId: a.eventId, eventKepId: a.eventKepId, subEventIds: a.subEventIds, sudahAda: true });
     expect(vi.mocked(client.createRecords).mock.calls.length).toBe(n);
   });
   it("a legacy Events row with the same name (no audit trail of ours) is never adopted -> 409", async () => {
@@ -164,6 +191,33 @@ describe("createKep partial failure and idempotent retry", () => {
     expect(rows(T.subEvent)).toHaveLength(28);
     expect(new Set(rows(T.subEvent).map((s) => s.fields[F.subEvent.urutan])).size).toBe(28);
     expect(rows(T.auditKep).filter((a) => a.fields[F.auditKep.aksi] === "create_kep")).toHaveLength(1);
+  });
+
+  it("a retry with a different tanggalMulai for an in-progress KEP is a 409 and writes nothing", async () => {
+    const real = vi.mocked(client.createRecords).getMockImplementation()!;
+    let n = 0;
+    vi.mocked(client.createRecords).mockImplementation(async (t, r, e) => {
+      if (t === T.subEvent && ++n === 2) throw new Error("Airtable request failed: HTTP 500");
+      return real(t, r, e);
+    });
+    await createKep(picA, input, { now: NOW }).catch(() => {});
+    vi.mocked(client.createRecords).mockImplementation(real);
+    const calls = vi.mocked(client.createRecords).mock.calls.length;
+    await expect(createKep(picA, { ...input, tanggalMulai: "2027-03-07" }, { now: NOW })).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/tanggal/i) });
+    expect(vi.mocked(client.createRecords).mock.calls.length).toBe(calls);
+  });
+
+  it("a retry never resumes an EventKEP whose organizer is not the PIC's own paroki", async () => {
+    const real = vi.mocked(client.createRecords).getMockImplementation()!;
+    let n = 0;
+    vi.mocked(client.createRecords).mockImplementation(async (t, r, e) => {
+      if (t === T.subEvent && ++n === 2) throw new Error("Airtable request failed: HTTP 500");
+      return real(t, r, e);
+    });
+    await createKep(picA, input, { now: NOW }).catch(() => {});
+    vi.mocked(client.createRecords).mockImplementation(real);
+    rows(T.eventKep)[0].fields[F.eventKep.penyelenggara] = ["recORGB000000001"];
+    await expect(createKep(picA, input, { now: NOW })).rejects.toMatchObject({ status: 409 });
   });
 
   it("failure before Events exists leaves a clean resume", async () => {

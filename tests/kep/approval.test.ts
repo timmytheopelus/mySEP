@@ -127,8 +127,19 @@ describe("decideKep", () => {
   });
   it("a mail failure does not undo or fail the decision", async () => {
     setMailer({ send: async () => { throw new Error("smtp down"); } });
-    await expect(decideKep(sep, KEP, "Disetujui", "")).resolves.toBeUndefined();
+    await expect(decideKep(sep, KEP, "Disetujui", "")).resolves.toEqual({ emailTerkirim: false });
     expect(kepRow().fields[F.eventKep.statusPersetujuan]).toBe("Disetujui");
+    expect(rows(T.auditKep).some((a) => a.fields[F.auditKep.aksi] === "decision_email_failed" && a.fields[F.auditKep.targetId] === KEP)).toBe(true);
+  });
+  it("reports emailTerkirim:true when all mails went out", async () => {
+    await expect(decideKep(sep, KEP, "Disetujui", "")).resolves.toEqual({ emailTerkirim: true });
+    expect(rows(T.auditKep).some((a) => a.fields[F.auditKep.aksi] === "decision_email_failed")).toBe(false);
+  });
+  it("uses the SubmittedBy field of the KEP as submitter", async () => {
+    store[T.auditKep] = [];
+    kepRow().fields[F.eventKep.submittedBy] = "Direct@X.id";
+    await decideKep(sep, KEP, "Disetujui", "");
+    expect(sent.map((m) => m.to).sort()).toEqual(["direct@x.id", "pic.a@x.id"]);
   });
   it("audit is written before the state change", async () => {
     const order: string[] = [];
