@@ -11,16 +11,30 @@ describe("totp", () => {
     expect(a).toMatch(/^[A-Z2-7]{16,}$/);
     expect(generateTotpSecret()).not.toBe(a);
   });
-  it("accepts current and adjacent codes, rejects 3 steps old and garbage", () => {
+  it("accepts current and adjacent codes, rejects 3 steps old and garbage (fixed clock)", () => {
     const secret = generateTotpSecret();
-    const now = Math.floor(Date.now() / 1000);
+    const now = 1_800_000_015; // mid-step, so +-30 is exactly +-1 step
+    vi.useFakeTimers();
+    vi.setSystemTime(now * 1000);
     const at = (e: number) => generateSync({ secret, epoch: e });
-    expect(verifyTotp(secret, at(now))).toBe(true);
-    expect(verifyTotp(secret, at(now - 30))).toBe(true);
-    expect(verifyTotp(secret, at(now + 30))).toBe(true);
-    expect(verifyTotp(secret, at(now - 90))).toBe(false);
-    expect(verifyTotp(secret, "abcdef")).toBe(false);
-    expect(verifyTotp(secret, "")).toBe(false);
+    expect(verifyTotp(secret, at(now))).toBe(Math.floor(now / 30));
+    expect(verifyTotp(secret, at(now - 30))).toBe(Math.floor(now / 30) - 1);
+    expect(verifyTotp(secret, at(now + 30))).toBe(Math.floor(now / 30) + 1);
+    expect(verifyTotp(secret, at(now - 90))).toBeNull();
+    expect(verifyTotp(secret, "abcdef")).toBeNull();
+    expect(verifyTotp(secret, "")).toBeNull();
+  });
+  it("rejects replay: a step <= lastUsedStep is refused, a newer one accepted", () => {
+    const secret = generateTotpSecret();
+    const now = 1_800_000_015;
+    vi.useFakeTimers();
+    vi.setSystemTime(now * 1000);
+    const code = generateSync({ secret, epoch: now });
+    const step = verifyTotp(secret, code);
+    expect(step).not.toBeNull();
+    expect(verifyTotp(secret, code, step)).toBeNull();
+    expect(verifyTotp(secret, generateSync({ secret, epoch: now - 30 }), step)).toBeNull();
+    expect(verifyTotp(secret, generateSync({ secret, epoch: now + 30 }), step)).toBe(step! + 1);
   });
 });
 
@@ -46,6 +60,11 @@ describe("encryptSecret/decryptSecret", () => {
     const blob = encryptSecret("x");
     vi.stubEnv("MFA_ENC_KEY", randomBytes(32).toString("base64"));
     expect(() => decryptSecret(blob)).toThrow();
+  });
+  it("rejects a key with stray characters even if it decodes to 32 bytes", () => {
+    const good = randomBytes(32).toString("base64");
+    vi.stubEnv("MFA_ENC_KEY", good.slice(0, 10) + "!" + good.slice(10));
+    expect(() => encryptSecret("x")).toThrow(/MFA_ENC_KEY/);
   });
   it("throws if the key is missing or not 32 bytes", () => {
     vi.stubEnv("MFA_ENC_KEY", "");

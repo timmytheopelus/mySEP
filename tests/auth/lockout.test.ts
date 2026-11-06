@@ -21,6 +21,10 @@ describe("lockout", () => {
     const s = nextFailureState({ failed: 5, lockedUntil: "2026-11-06T09:00:00.000Z" }, now);
     expect(s).toEqual({ failed: 1, lockedUntil: null });
   });
+  it("keeps counting when lockedUntil is unparsable (no reset)", () => {
+    expect(nextFailureState({ failed: 3, lockedUntil: "garbage" }, now)).toEqual({ failed: 4, lockedUntil: null });
+    expect(nextFailureState({ failed: 4, lockedUntil: "garbage" }, now).lockedUntil).toBe("2026-11-06T10:15:00.000Z");
+  });
   it("does not extend an active lock", () => {
     const locked = { failed: 5, lockedUntil: "2026-11-06T10:10:00.000Z" };
     expect(nextFailureState(locked, now)).toEqual(locked);

@@ -21,6 +21,33 @@ describe("validatePasswordPolicy", () => {
   });
 });
 
+describe("length cap and normalization", () => {
+  it("rejects more than 128 characters, accepts exactly 128", () => {
+    expect(validatePasswordPolicy("a".repeat(128)).ok).toBe(true);
+    expect(validatePasswordPolicy("a".repeat(129)).ok).toBe(false);
+  });
+  it("verifyPassword returns false for over-long input without hashing", async () => {
+    const h = await hashPassword("a".repeat(20));
+    expect(await verifyPassword(h, "a".repeat(129))).toBe(false);
+  });
+  it("treats NFC and NFD forms (and fullwidth) as the same password", async () => {
+    const nfc = "caf\u00e9-password-ok";
+    const nfd = "cafe\u0301-password-ok";
+    const h = await hashPassword(nfc);
+    expect(await verifyPassword(h, nfd)).toBe(true);
+    expect(await verifyPassword(await hashPassword("ＡＢＣ-password-1"), "ABC-password-1")).toBe(true);
+    expect(validatePasswordPolicy("a\u0301".repeat(11)).ok).toBe(false); // 11 chars after NFKC
+    expect(validatePasswordPolicy("a\u0301".repeat(12)).ok).toBe(true);
+  });
+  it("HIBP lookup uses the normalized form", async () => {
+    const sha = createHash("sha1").update("caf\u00e9-password-ok").digest("hex").toUpperCase();
+    const f = vi.fn(async () => new Response(""));
+    vi.stubGlobal("fetch", f);
+    await isBreachedPassword("cafe\u0301-password-ok");
+    expect(String((f.mock.calls[0] as unknown[])[0])).toBe(`https://api.pwnedpasswords.com/range/${sha.slice(0, 5)}`);
+  });
+});
+
 describe("hash/verify", () => {
   it("produces Argon2id hashes that differ per call and verify correctly", async () => {
     const a = await hashPassword("correct horse battery");

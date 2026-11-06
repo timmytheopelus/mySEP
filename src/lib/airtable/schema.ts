@@ -90,6 +90,7 @@ export const F = {
     loginTerakhir: "fldECGrMWK81V0YtY",
     gagalLogin: "fldSzGn8Ul8HU99yi",
     waktuKunci: "fldDdLKILJPHSbnut",
+    langkahTotpTerakhir: "fldxXkIOldyt3Fd7E",
   },
   auditKep: {
     aksi: "fldVn2L5B4eSjzmex",

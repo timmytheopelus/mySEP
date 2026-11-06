@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { hash, verify, type Algorithm } from "@node-rs/argon2";
 
 export const MIN_PASSWORD_LENGTH = 12;
+export const MAX_PASSWORD_LENGTH = 128;
 const HIBP_RANGE_URL = "https://api.pwnedpasswords.com/range/";
 const HIBP_TIMEOUT_MS = 5000;
 
@@ -17,22 +18,31 @@ export class BreachCheckUnavailableError extends Error {
   }
 }
 
+/** NFKC so the same visible password typed on different input methods is identical. */
+const normalize = (pw: string) => pw.normalize("NFKC");
+
 export function hashPassword(pw: string): Promise<string> {
-  return hash(pw, ARGON2_OPTIONS);
+  return hash(normalize(pw), ARGON2_OPTIONS);
 }
 
 /** Never throws: a malformed hash or any failure is simply "not verified". */
 export async function verifyPassword(storedHash: string, pw: string): Promise<boolean> {
+  const n = normalize(pw);
+  if (Array.from(n).length > MAX_PASSWORD_LENGTH) return false;
   try {
-    return await verify(storedHash, pw);
+    return await verify(storedHash, n);
   } catch {
     return false;
   }
 }
 
 export function validatePasswordPolicy(pw: string): { ok: boolean; reason?: string } {
-  if (Array.from(pw).length < MIN_PASSWORD_LENGTH) {
+  const len = Array.from(normalize(pw)).length;
+  if (len < MIN_PASSWORD_LENGTH) {
     return { ok: false, reason: `Kata sandi minimal ${MIN_PASSWORD_LENGTH} karakter.` };
+  }
+  if (len > MAX_PASSWORD_LENGTH) {
+    return { ok: false, reason: `Kata sandi maksimal ${MAX_PASSWORD_LENGTH} karakter.` };
   }
   return { ok: true };
 }
@@ -43,7 +53,7 @@ export function validatePasswordPolicy(pw: string): { ok: boolean; reason?: stri
  * must reject the new password and ask the user to try again.
  */
 export async function isBreachedPassword(pw: string): Promise<boolean> {
-  const sha1 = createHash("sha1").update(pw).digest("hex").toUpperCase();
+  const sha1 = createHash("sha1").update(normalize(pw)).digest("hex").toUpperCase();
   const prefix = sha1.slice(0, 5);
   const suffix = sha1.slice(5);
   let body: string;

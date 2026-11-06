@@ -18,3 +18,6 @@ Tidak ada tabel/field lama yang dihapus atau diubah.
 - Data Pengajar KEP: fldvKXMt3yunX41DJ (dari SubEvent.Pengajar)
 - Paroki (tbl8sfqU6G47orPpn): fldMzOCm7UVQGQhgt (dari AkunKEP.Paroki), fldu2eORn3yKTaORS (dari Pengelenggara KEP.Paroki)
 - SubEvent: fldxN1CIBE5PebFaA (dari Pendaftaran Events.Pertemuan Hadir)
+
+## Field baru tambahan (fix round Task 4, anti-replay TOTP)
+- AkunKEP tbleebgqGzUZPzwes: Langkah TOTP Terakhir fldxXkIOldyt3Fd7E (number) — time step TOTP terakhir yang berhasil dipakai; kode dengan step <= nilai ini ditolak.

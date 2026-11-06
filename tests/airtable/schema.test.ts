@@ -17,6 +17,8 @@ describe("schema", () => {
   it("allowlists every known field and no reverse-link fields", () => {
     expect(ALLOWED[T.subEvent].has(F.subEvent.agenda)).toBe(true);
     expect(ALLOWED[T.akunKep].has(F.akunKep.hashPassword)).toBe(true);
+    expect(F.akunKep.langkahTotpTerakhir).toBe("fldxXkIOldyt3Fd7E");
+    expect(ALLOWED[T.akunKep].has(F.akunKep.langkahTotpTerakhir)).toBe(true);
     expect(ALLOWED[T.events].has("fldvytyB1Pyrt0qKB")).toBe(false);
   });
 });

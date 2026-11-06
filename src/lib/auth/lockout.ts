@@ -12,8 +12,9 @@ export function isLocked(lockedUntil: string | null, now: Date): boolean {
 /** State after one more failed attempt. The 5th failure locks for 15 minutes. */
 export function nextFailureState(state: FailureState, now: Date): FailureState {
   if (isLocked(state.lockedUntil, now)) return state;
-  // A lock that has expired starts a fresh count.
-  const failed = (state.lockedUntil ? 0 : state.failed) + 1;
+  // A parsable, expired lock starts a fresh count; an unparsable value must not reset it.
+  const expired = state.lockedUntil !== null && Number.isFinite(Date.parse(state.lockedUntil));
+  const failed = (expired ? 0 : state.failed) + 1;
   if (failed >= MAX_FAILED_ATTEMPTS) {
     return { failed, lockedUntil: new Date(now.getTime() + LOCK_MINUTES * 60_000).toISOString() };
   }
