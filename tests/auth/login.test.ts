@@ -158,7 +158,7 @@ describe("MFA", () => {
     expect(await r1.json()).toEqual({ next: "mfa_enroll" });
     expect(setCookies(r1).some((c) => c.startsWith("__Host-kep_session=") && !c.includes("Max-Age=0"))).toBe(false);
     const pre = cookieHeaderFrom(r1);
-    expect(setCookies(r1).find((c) => c.startsWith("kep_preauth="))).toMatch(/Path=\/api\/auth\/mfa\/enroll/);
+    expect(setCookies(r1).find((c) => c.startsWith("__Secure-kep_preauth="))).toMatch(/Path=\/api\/auth\/mfa\/enroll/);
 
     const s = await (await enroll(req({}, pre))).json();
     expect(s.otpauthUri).toContain("otpauth://totp/");

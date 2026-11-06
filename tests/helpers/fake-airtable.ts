@@ -10,6 +10,11 @@ export const store: Record<string, Row[]> = {};
 export function fakeClientModule() {
   return {
     listRecords: vi.fn(async (table: string) => structuredClone(store[table] ?? [])),
+    createRecords: vi.fn(async (table: string, rows: Record<string, unknown>[]) => {
+      const out = rows.map((fields, i) => ({ id: `recNEW${(store[table] ?? []).length + i}`.padEnd(17, "0"), fields: structuredClone(fields) }));
+      (store[table] ??= []).push(...out);
+      return structuredClone(out);
+    }),
     updateRecords: vi.fn(async (table: string, rows: Row[]) => {
       for (const r of rows) {
         const row = (store[table] ?? []).find((x) => x.id === r.id);

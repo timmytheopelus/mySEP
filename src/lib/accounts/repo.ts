@@ -1,5 +1,5 @@
 import "server-only";
-import { listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
+import { createRecords, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
 
 export type Role = "SEP" | "PIC" | "ADMIN";
@@ -123,6 +123,16 @@ export async function saveMfaEnrollment(id: string, secretEnc: string, totpStep:
 
 export const mfaRequired = (role: Role) => role === "SEP" || role === "PIC";
 
-export async function bindGoogleSub(id: string, sub: string): Promise<void> {
+/**
+ * First Google login: writes the sub, appends an AuditKEP row (aksi google_bind; only the last 4 chars of
+ * the sub), then re-reads the account and returns the sub that is actually stored so the caller can
+ * detect a lost race. Any write error propagates (the login fails).
+ */
+export async function bindGoogleSub(id: string, sub: string, email: string): Promise<string | null> {
   await updateRecords(T.akunKep, [{ id, fields: { [A.idGoogle]: sub } }]);
+  const AU = F.auditKep;
+  await createRecords(T.auditKep, [
+    { [AU.aksi]: "google_bind", [AU.pelaku]: email, [AU.targetId]: id, [AU.sesudah]: sub.slice(-4) },
+  ]);
+  return (await getAccountById(id))?.googleSub ?? null;
 }

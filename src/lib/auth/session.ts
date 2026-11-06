@@ -8,11 +8,11 @@ export type Session = { accountId: string; email: string; role: Role; parokiId: 
 export type Amr = "pwd" | "otp" | "google";
 
 export const SESSION_COOKIE = "__Host-kep_session";
-export const PREAUTH_COOKIE = "kep_preauth";
+export const PREAUTH_COOKIE = "__Secure-kep_preauth";
 /** Pre-auth cookie is only sent to the enrollment route. */
 export const PREAUTH_PATH = "/api/auth/mfa/enroll";
 /** Google SSO: TOTP step for accounts that already have a secret. Own cookie, own path, own purpose. */
-export const PREAUTH_VERIFY_COOKIE = "kep_preauth_verify";
+export const PREAUTH_VERIFY_COOKIE = "__Secure-kep_preauth_verify";
 export const PREAUTH_VERIFY_PATH = "/api/auth/google/mfa";
 export const SESSION_TTL_S = 15 * 60;
 export const SESSION_MAX_S = 8 * 3600;

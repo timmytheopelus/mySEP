@@ -29,7 +29,7 @@ export const CALLBACK_PATH = "/api/auth/google/callback";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const JWKS_URI = "https://www.googleapis.com/oauth2/v3/certs";
-const ISSUER = "https://accounts.google.com";
+const ISSUERS = ["https://accounts.google.com", "accounts.google.com"];
 const AUD_FLOW = "kep-gflow";
 const HTTP_TIMEOUT_MS = 5000;
 
@@ -129,6 +129,13 @@ async function exchangeCode(code: string, verifier: string): Promise<string | nu
   return typeof body.id_token === "string" && body.id_token ? body.id_token : null;
 }
 
+/** Google vouches for gmail.com/googlemail.com mailboxes, and for Workspace domains via the hd claim. */
+function googleIsAuthoritative(email: string, hd: unknown): boolean {
+  const domain = email.trim().toLowerCase().split("@").pop() ?? "";
+  if (domain === "gmail.com" || domain === "googlemail.com") return true;
+  return typeof hd === "string" && hd !== "" && hd.toLowerCase() === domain;
+}
+
 /** Never throws: any error (network, config, Airtable) is a plain failure. */
 export async function completeGoogleLogin(
   params: { code: string; state: string },
@@ -145,11 +152,14 @@ export async function completeGoogleLogin(
     if (!idToken) return FAIL;
     const { payload } = await jwtVerify(idToken, keys(), {
       algorithms: ["RS256"],
-      issuer: ISSUER,
+      issuer: ISSUERS,
       audience: config().clientId,
       requiredClaims: ["exp", "iat", "sub", "email", "nonce"],
     });
     if (typeof payload.nonce !== "string" || !safeEqual(payload.nonce, cookies.nonce)) return FAIL;
+    // azp (when present) must be us; with a single aud it is optional, with several it is mandatory.
+    if (payload.azp !== undefined && payload.azp !== config().clientId) return FAIL;
+    if (Array.isArray(payload.aud) && payload.azp === undefined) return FAIL;
     if (payload.email_verified !== true) return FAIL;
     if (typeof payload.email !== "string" || typeof payload.sub !== "string" || !payload.sub) return FAIL;
 
@@ -157,7 +167,11 @@ export async function completeGoogleLogin(
     if (!acc || isLocked(acc.lockedUntil, new Date())) return FAIL;
 
     if (acc.googleSub === null) {
-      await bindGoogleSub(acc.id, payload.sub); // first login binds the Google account
+      // Trust on first use only where Google is authoritative for the address. Linking for other
+      // addresses must come from an already authenticated session (Task 8), never from this flow.
+      if (!googleIsAuthoritative(payload.email, payload.hd)) return FAIL;
+      const stored = await bindGoogleSub(acc.id, payload.sub, acc.email);
+      if (stored === null || !safeEqual(stored, payload.sub)) return FAIL; // lost a concurrent bind
       acc.googleSub = payload.sub;
     } else if (!safeEqual(acc.googleSub, payload.sub)) {
       return FAIL;

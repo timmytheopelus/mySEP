@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { generateSync } from "otplib";
-import { SignJWT, exportJWK, generateKeyPair, type JWK, type CryptoKey } from "jose";
+import { SignJWT, decodeJwt, exportJWK, generateKeyPair, type JWK, type CryptoKey } from "jose";
 import { F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
 
@@ -397,5 +397,111 @@ describe("routes", () => {
     const pre = cookiesOf(await finishFlow({ email: "new@gmail.com", sub: "g-new" }));
     row("recNEW0000000001").fields[A.idGoogle] = "g-other";
     expect((await enroll(postJson("/api/auth/mfa/enroll", {}, pre))).status).toBe(401);
+  });
+
+  it("amr: ADMIN session is [google]; SEP after TOTP is [google, otp]", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
+    await seedAccount({ id: "recSEP000000001", email: "sep@gmail.com", peran: "SEP", mfaSecret: SEP_SECRET });
+    const tok = (res: Response) => res.headers.getSetCookie().find((c) => c.startsWith("__Host-kep_session="))!.split(";")[0].split("=")[1];
+    expect(decodeJwt(tok(await finishFlow({ email: "budi@gmail.com" }))).amr).toEqual(["google"]);
+    const pre = cookiesOf(await finishFlow({ email: "sep@gmail.com" }));
+    const ok = await googleMfa(postJson("/api/auth/google/mfa", { code: generateSync({ secret: SEP_SECRET }) }, pre));
+    expect(decodeJwt(tok(ok)).amr).toEqual(["google", "otp"]);
+  });
+
+  it("amr after Google enrollment is [google, otp]", async () => {
+    await seedAccount({ id: "recNEW0000000001", email: "new@gmail.com", peran: "SEP" });
+    const pre = cookiesOf(await finishFlow({ email: "new@gmail.com" }));
+    const s1 = await enroll(postJson("/api/auth/mfa/enroll", {}, pre));
+    const { secret } = (await s1.json()) as { secret: string };
+    const s2 = await enroll(postJson("/api/auth/mfa/enroll", { code: generateSync({ secret }) }, cookiesOf(s1)));
+    const t = s2.headers.getSetCookie().find((c) => c.startsWith("__Host-kep_session="))!.split(";")[0].split("=")[1];
+    expect(decodeJwt(t).amr).toEqual(["google", "otp"]);
+  });
+
+  it("the enroll pre-auth cookie is rejected by the Google MFA route", async () => {
+    await seedAccount({ id: "recNEW0000000001", email: "new@gmail.com", peran: "SEP", mfaSecret: SEP_SECRET });
+    const enrollPre = cookiesOf(await finishFlow({ email: "new@gmail.com" })).replace("kep_preauth_verify", "kep_preauth");
+    expect((await googleMfa(postJson("/api/auth/google/mfa", { code: "123456" }, enrollPre))).status).toBe(401);
+    await seedAccount({ id: "recNEW0000000002", email: "n2@gmail.com", peran: "SEP" });
+    const real = cookiesOf(await finishFlow({ email: "n2@gmail.com" }));
+    expect((await googleMfa(postJson("/api/auth/google/mfa", { code: "123456" }, real.replace("kep_preauth", "kep_preauth_verify")))).status).toBe(401);
+  });
+
+  it("sub mismatch, locked and unknown accounts redirect identically", async () => {
+    await seedAccount({ id: "recBOUND0000001", email: "bound@gmail.com", peran: "Admin Paroki", fields: { [A.idGoogle]: "other-sub" } });
+    await seedAccount({
+      id: "recLOCK00000001", email: "lock@gmail.com", peran: "Admin Paroki",
+      fields: { [A.waktuKunci]: new Date(Date.now() + 600_000).toISOString() },
+    });
+    const rs = [
+      await finishFlow({ email: "bound@gmail.com", sub: "g-sub-1" }),
+      await finishFlow({ email: "lock@gmail.com" }),
+      await finishFlow({ email: "nobody@gmail.com" }),
+    ];
+    for (const r of rs) {
+      expect(r.status).toBe(302);
+      expect(r.headers.get("location")).toBe("https://kep.example.org/login?error=google");
+      expect(r.headers.getSetCookie().map((c) => c.split("=")[0])).toEqual(["__Host-kep_gflow"]);
+    }
+  });
+});
+
+describe("first-binding trust", () => {
+  it("a non-Google-authoritative domain without hd is refused and nothing is bound", async () => {
+    await seedAccount({ id: "recSEP000000001", email: "umat@parokixyz.org", peran: "SEP" });
+    await seedAccount({ id: "recADMIN00000001", email: "adm@parokixyz.org", peran: "Admin Paroki" });
+    expect(await run({ email: "umat@parokixyz.org" })).toEqual({ ok: false });
+    expect(await run({ email: "adm@parokixyz.org" })).toEqual({ ok: false });
+    expect(row("recSEP000000001").fields[A.idGoogle]).toBeUndefined();
+    expect(row("recADMIN00000001").fields[A.idGoogle]).toBeUndefined();
+    expect(store[T.auditKep] ?? []).toHaveLength(0);
+    const res = await finishFlow({ email: "adm@parokixyz.org" });
+    expect(res.headers.get("location")).toBe("https://kep.example.org/login?error=google");
+  });
+
+  it("hd equal to the email domain is authoritative; a different hd is not", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "adm@parokixyz.org", peran: "Admin Paroki" });
+    expect(await run({ email: "adm@parokixyz.org", hd: "other.org" })).toEqual({ ok: false });
+    expect((await run({ email: "adm@parokixyz.org", hd: "parokixyz.org" })).ok).toBe(true);
+    expect(row("recADMIN00000001").fields[A.idGoogle]).toBe("g-sub-1");
+  });
+
+  it("a bound non-gmail account may keep logging in (binding done earlier by an admin)", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "adm@parokixyz.org", peran: "Admin Paroki", fields: { [A.idGoogle]: "g-sub-1" } });
+    expect((await run({ email: "adm@parokixyz.org" })).ok).toBe(true);
+  });
+
+  it("every first binding writes an audit row with only the last 4 chars of the sub", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
+    await run({ email: "budi@gmail.com", sub: "1234567890abcdef" });
+    await run({ email: "budi@gmail.com", sub: "1234567890abcdef" }); // not a new binding
+    const rows = store[T.auditKep];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].fields).toEqual({
+      [F.auditKep.aksi]: "google_bind",
+      [F.auditKep.pelaku]: "budi@gmail.com",
+      [F.auditKep.targetId]: "recADMIN00000001",
+      [F.auditKep.sesudah]: "cdef",
+    });
+  });
+
+  it("concurrent first logins with different subs: at most one wins and it is the stored sub", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
+    const rs = await Promise.all([
+      run({ email: "budi@gmail.com", sub: "sub-AAAA" }),
+      run({ email: "budi@gmail.com", sub: "sub-BBBB" }),
+    ]);
+    const wins = rs.filter((r) => r.ok);
+    expect(wins.length).toBeLessThanOrEqual(1);
+    const stored = row("recADMIN00000001").fields[A.idGoogle];
+    if (wins.length === 1) expect(["sub-AAAA", "sub-BBBB"][rs.indexOf(wins[0])]).toBe(stored);
+  });
+
+  it("accepts the bare issuer accounts.google.com; rejects a mismatching azp", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
+    expect((await run({ email: "budi@gmail.com", iss: "accounts.google.com" })).ok).toBe(true);
+    expect(await run({ email: "budi@gmail.com", azp: "someone-else" })).toEqual({ ok: false });
+    expect((await run({ email: "budi@gmail.com", azp: CLIENT_ID })).ok).toBe(true);
   });
 });
