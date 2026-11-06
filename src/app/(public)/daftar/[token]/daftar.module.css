@@ -12,3 +12,10 @@
 .button { min-height: 2.75rem; min-width: 2.75rem; padding: 0 1.25rem; font-size: 1rem; cursor: pointer; }
 .error { color: #b00020; }
 .ok { color: #1b5e20; }
+.group { display: flex; flex-direction: column; gap: 0.9rem; border-top: 1px solid #ddd; padding-top: 0.75rem; }
+.summary { border: 2px solid #b00020; border-radius: 0.5rem; padding: 0.5rem 1rem; }
+.summary[hidden] { display: none; }
+.summaryToggle { min-height: 2.75rem; display: flex; align-items: center; font-weight: 700; cursor: pointer; }
+.details { border: 1px solid #ccc; border-radius: 0.5rem; padding: 0 1rem 1rem; }
+.consent { display: flex; gap: 0.6rem; align-items: flex-start; font-weight: 600; min-height: 2.75rem; }
+.checkbox { width: 1.5rem; height: 1.5rem; flex: none; margin-top: 0.1rem; }

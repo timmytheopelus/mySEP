@@ -39,6 +39,9 @@ export const PENGAJAR_READ = {
 // Pendaftaran Events "CreatedTimeAuto").
 export const TEAM_UMAT_CREATED = "fldRztRSisBK7yzng";
 export const PENDAFTARAN_CREATED = "fld0R2DJqFnFZU2sj";
+// TeamUmat tombstones (read only): "Hapus" checkbox and "Tanggal Meninggal" date. Such rows are never matched.
+export const TEAM_UMAT_HAPUS = "fldxZvnqVvAH4aWyd";
+export const TEAM_UMAT_MENINGGAL = "fldhCRFZpi4cx0zRJ";
 
 export const SEL = {
   kelompokAcaraKep: "sel89ZKeY5BWQgaTL",
@@ -196,7 +199,18 @@ export const pickAllowedForRole = (tableId: string, role: string, fields: Record
  * on purpose, whatever the request body contains.
  */
 export const PUBLIC_REG_ALLOWED: Record<string, Set<string>> = {
-  [T.teamUmat]: new Set<string>(Object.values(F.teamUmat)),
+  // Explicit on purpose: a field added to F.teamUmat later (jabatan BPK, roles...) must NOT become publicly writable.
+  [T.teamUmat]: new Set<string>([
+    F.teamUmat.namaLengkap,
+    F.teamUmat.namaBaptis,
+    F.teamUmat.email,
+    F.teamUmat.noWhatsapp,
+    F.teamUmat.tanggalLahir,
+    F.teamUmat.alamatTinggal,
+    F.teamUmat.jenisKelamin,
+    F.teamUmat.statusPernikahan,
+    F.teamUmat.paroki,
+  ]),
   [T.pendaftaranEvents]: new Set<string>([
     F.pendaftaranEvents.event,
     F.pendaftaranEvents.teamUmat,

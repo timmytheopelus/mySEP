@@ -65,8 +65,26 @@ const valid = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** The next Pendaftaran create is followed by an older rival row for the same person (cross-instance race). */
+function rivalOnNextPendaftaran() {
+  const real = vi.mocked(client.createRecords).getMockImplementation()!;
+  let armed = true;
+  vi.mocked(client.createRecords).mockImplementation(async (table, rows, extra) => {
+    const out = await real(table, rows, extra);
+    if (armed && table === T.pendaftaranEvents) {
+      armed = false;
+      const personId = (rows[0][P.teamUmat] as string[])[0];
+      store[T.pendaftaranEvents].push({
+        id: "recRIVAL000000001",
+        fields: { [P.event]: [EV], [P.teamUmat]: [personId], [P.statusPendaftaran]: "Daftar", [PENDAFTARAN_CREATED]: "2000-01-01T00:00:00.000Z" },
+      });
+      store[T.pendaftaranEvents].find((r) => r.id === out[0].id)!.fields[PENDAFTARAN_CREATED] = "2000-01-01T00:00:01.000Z";
+    }
+    return out;
+  });
+}
 const pendaftaran = () => store[T.pendaftaranEvents] ?? [];
-const active = () => pendaftaran().filter((r) => r.fields[P.statusPendaftaran] !== "Batal");
+const active = () => pendaftaran().filter((r) => !["Batal", "Dobel Daftar"].includes(String(r.fields[P.statusPendaftaran])));
 const persons = () => store[T.teamUmat] ?? [];
 
 function seedKep(status = "Disetujui", opts: { selesai?: string } = {}) {
@@ -386,13 +404,13 @@ describe("registerPeserta", () => {
     expect(persons()).toHaveLength(0);
   });
   it("sends the confirmation email exactly once, with escaped content and no health data", async () => {
-    await registerPeserta(EV, PesertaInput.parse(valid({ namaLengkap: "Maria <script>alert(1)</script>" })));
+    await registerPeserta(EV, PesertaInput.parse(valid({ namaLengkap: "Maria O'Brien" })));
     expect(mails).toHaveLength(1);
     expect(mails[0].to).toBe("maria@example.com");
     expect(mails[0].template).toBe("pendaftaran_kep");
     const rendered = renderTemplate("pendaftaran_kep", mails[0].data as never);
-    expect(rendered.html).not.toContain("<script>");
-    expect(rendered.html).toContain("&lt;script&gt;");
+    expect(rendered.html).toContain("O&#39;Brien");
+    expect(rendered.html).not.toContain("O'Brien");
     const all = JSON.stringify(mails) + rendered.html + rendered.text;
     expect(all).not.toContain("RAHASIA");
     expect(rendered.subject).not.toMatch(/[\r\n]/);
@@ -442,24 +460,7 @@ describe("registerPeserta", () => {
     expect(a.pendaftaranId).toBe(b.pendaftaranId);
   });
   it("cross-process race: a rival row created first wins; ours is marked Dobel Daftar (never deleted)", async () => {
-    const real = vi.mocked(client.createRecords).getMockImplementation()!;
-    vi.mocked(client.createRecords).mockImplementationOnce(async (...args: Parameters<typeof client.createRecords>) => {
-      // person row is created first by the normal path
-      return real(...args);
-    });
-    vi.mocked(client.createRecords).mockImplementationOnce(async (table, rows, extra) => {
-      const out = await real(table, rows, extra);
-      if (table === T.pendaftaranEvents) {
-        const personId = (rows[0][P.teamUmat] as string[])[0];
-        store[T.pendaftaranEvents].push({
-          id: "recRIVAL000000001",
-          fields: { [P.event]: [EV], [P.teamUmat]: [personId], [P.statusPendaftaran]: "Daftar", [PENDAFTARAN_CREATED]: "2000-01-01T00:00:00.000Z" },
-        });
-        out[0].fields[PENDAFTARAN_CREATED] = "2000-01-01T00:00:01.000Z";
-        store[T.pendaftaranEvents].find((r) => r.id === out[0].id)!.fields[PENDAFTARAN_CREATED] = "2000-01-01T00:00:01.000Z";
-      }
-      return out;
-    });
+    rivalOnNextPendaftaran();
     const r = await registerPeserta(EV, PesertaInput.parse(valid()));
     expect(r.status).toBe("already_registered");
     expect(r.pendaftaranId).toBe("recRIVAL000000001");
@@ -478,15 +479,7 @@ describe("registerPeserta", () => {
 
 describe("M3 duplicate marking failure", () => {
   it("if marking the loser fails: AuditKEP registrasi_duplikat_gagal_ditandai and still already_registered", async () => {
-    const real = vi.mocked(client.createRecords).getMockImplementation()!;
-    vi.mocked(client.createRecords).mockImplementationOnce((...a: Parameters<typeof client.createRecords>) => real(...a));
-    vi.mocked(client.createRecords).mockImplementationOnce(async (table, rows, extra) => {
-      const out = await real(table, rows, extra);
-      const personId = (rows[0][P.teamUmat] as string[])[0];
-      store[T.pendaftaranEvents].push({ id: "recRIVAL000000001", fields: { [P.event]: [EV], [P.teamUmat]: [personId], [P.statusPendaftaran]: "Daftar", [PENDAFTARAN_CREATED]: "2000-01-01T00:00:00.000Z" } });
-      store[T.pendaftaranEvents].find((r) => r.id === out[0].id)!.fields[PENDAFTARAN_CREATED] = "2000-01-01T00:00:01.000Z";
-      return out;
-    });
+    rivalOnNextPendaftaran();
     const realUpd = vi.mocked(client.updateRecords).getMockImplementation()!;
     vi.mocked(client.updateRecords).mockImplementationOnce(async () => { throw new Error("airtable down"); });
     const r = await registerPeserta(EV, PesertaInput.parse(valid()));

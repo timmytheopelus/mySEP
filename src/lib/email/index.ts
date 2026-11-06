@@ -29,6 +29,11 @@ export function setMailer(m: Mailer | null): void {
   override = m;
 }
 
+/** True when a send can really leave the system (a mock counts: tests). Without it sendMail is a logged no-op. */
+export function mailConfigured(): boolean {
+  return override !== null || !!process.env.RESEND_API_KEY;
+}
+
 export function sendMail(to: string, template: MailTemplate, data: MailData): Promise<void> {
   return (override ?? envMailer).send(to, template, data);
 }

@@ -29,6 +29,11 @@ export const POST = withAuth<{ id: string }>(
       // Audit first (no personal data), abort when it cannot be written.
       await logAudit({ actorEmail: session.email, action: "peserta_manual_daftar", targetId: params.id });
       const r = await registerPeserta(eventId, parsed.data, { actorEmail: session.email });
+      try {
+        await logAudit({ actorEmail: session.email, action: "peserta_manual_selesai", targetId: params.id, after: { status: r.status, pendaftaranId: r.pendaftaranId } });
+      } catch {
+        /* the "daftar" row above already exists */
+      }
       return json(r, r.status === "registered" ? 201 : 200);
     } catch (e) {
       if (e instanceof RegistrationClosedError) return json({ error: "Pendaftaran belum dibuka: KEP belum disetujui SEP." }, 409);
