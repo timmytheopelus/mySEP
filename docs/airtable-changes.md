@@ -21,3 +21,8 @@ Tidak ada tabel/field lama yang dihapus atau diubah.
 
 ## Field baru tambahan (fix round Task 4, anti-replay TOTP)
 - AkunKEP tbleebgqGzUZPzwes: Langkah TOTP Terakhir fldxXkIOldyt3Fd7E (number) — time step TOTP terakhir yang berhasil dipakai; kode dengan step <= nilai ini ditolak.
+
+## Final fix round B (2026-11-07): tidak ada tabel atau field baru
+- Tidak ada perubahan skema. Field yang sudah ada kini ditulis aplikasi: SubEvent Tanggal fldUjbwLw0J6tMF0h (date), Jam Mulai fld5KQvsCHytRZKGQ dan Jam Selesai fldSUdoLGXbHVAhCe (keduanya singleLineText, diisi "JJ:MM") lewat halaman Jadwal.
+- Peserta datang langsung membuat baris MasterData TeamUmat (nama, WA, email bila ada) dan Pendaftaran Events lewat jalur pendaftaran yang sudah ada; baris TeamUmat yang sudah ada tidak pernah diubah.
+- Layar data kesehatan hanya membaca field Pendaftaran Events yang sudah ada (Riwayat Penyakit, Alergi, Obat Rutin, Kontak Darurat).

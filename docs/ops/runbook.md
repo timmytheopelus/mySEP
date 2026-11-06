@@ -220,6 +220,14 @@ Aplikasi hanya memakai Airtable; cadangkan base:
   mengubah tabel aplikasi secara manual kecuali mengikuti runbook ini.
 - Data kesehatan hanya diminta bila perlu untuk retret, opsional, dengan persetujuan peserta; hanya PIC/Admin paroki
   yang bersangkutan yang melihatnya di aplikasi (SEP tidak).
+- **Layar data kesehatan** `/kep/<id>/kesehatan` (tautan "Data kesehatan peserta" di halaman KEP, hanya PIC/Admin paroki
+  itu): daftar peserta yang mengisi catatan kesehatan atau kontak darurat (peserta mundur tampil redup; Batal dan
+  Panitia tidak). SEP dialihkan, paroki lain 404 (juga bila acara dipakai bersama KEP paroki lain). Respons
+  `Cache-Control: no-store` (diatur di `next.config.ts`). Setiap pembukaan dicatat di AuditKEP sebagai
+  `data_kesehatan_dilihat` (hanya id baris, tanpa nama atau isi), maksimal sekali per 10 menit per akun dan KEP
+  (penanda di Upstash `kep:rl:...`; bila Upstash tak terjangkau, setiap pembukaan dicatat). Gagal mencatat audit =
+  halaman tidak ditampilkan. Tombol "Cetak" memakai CSS cetak A4 tanpa navigasi. Biaya: 3 permintaan Airtable
+  pertama, 1 pada muat ulang dalam 10 menit.
 
 ## 13. Skrip pemetaan data lama (`pnpm map-legacy`)
 
@@ -274,6 +282,23 @@ Gerbang pengaman (tidak bisa dilewati):
 - Sesi 15 menit geser: halaman yang dibuka diperpanjang oleh ping `/api/sesi/ping` tiap 5 menit selama tab terlihat
   dan ada aktivitas (klik/tombol) dalam 5 menit terakhir; tidak pernah melewati batas 8 jam. Tab diam → keluar.
 - Pencabutan link pendaftaran bergantung pada baris AuditKEP (bagian 7).
+- **Jadwal (tanggal/jam pertemuan)**: PIC paroki (saat KEP Diajukan atau Disetujui; pewarta tetap terkunci setelah
+  disetujui) dan SEP (selain Ditolak) mengubah Tanggal, Jam Mulai, Jam Selesai satu pertemuan lewat
+  `POST /api/kep/<id>/subevent/<sid>/jadwal` (halaman Jadwal; Admin Paroki 403). Tanggal harus antara tanggal mulai KEP
+  dan satu tahun sesudahnya; jam `JJ:MM` (kedua-duanya atau kosong semua), selesai setelah mulai. Pertemuan tidak pernah
+  ditambah, dihapus atau diurutkan ulang. Audit `jadwal_set` (sebelum/sesudah: tanggal dan jam, tanpa data pribadi),
+  idempoten per `opId` terikat isi permintaan. Mengubah tanggal pertemuan terakhir otomatis menggeser pembukaan
+  penetapan hasil akhir dan pemilihan "Absen hari ini". Batas 120 per 10 menit per akun; biaya 5 permintaan Airtable.
+- **Peserta datang langsung** (layar Absen, tombol "+ Tambah peserta", `POST /api/kep/<id>/absen/<sid>/tambah`): nama
+  lengkap + WhatsApp, email opsional; memakai jalur pendaftaran biasa (cari orang dari WA/email, orang yang sudah ada
+  tidak pernah diubah), lalu menandai hadir di pertemuan itu. Tanpa data kesehatan (tidak ada persetujuan yang perlu
+  dicatat). KEP harus Disetujui; PIC dan Admin paroki sendiri (lihat pertanyaan terbuka 1). **Hanya online**: tanpa
+  sinyal muncul pesan, tidak diantre. Berbagi batas 60 per 10 menit dengan input peserta manual. Audit
+  `peserta_walkin_daftar` (id saja) dan `absen_set`. Biaya sekitar 11 permintaan Airtable. Di halaman KEP, peserta yang
+  email atau tanggal lahirnya belum ada diberi tanda "Data belum lengkap" (hanya tanda dan jumlah; belum ada layar
+  untuk melengkapi, lengkapi langsung di Airtable atau lewat pendaftaran ulang oleh orang itu sendiri).
+- Cache akun sesi (60 detik; dicabut langsung saat nonaktif/ganti peran/ganti password) kini satu per proses, dipakai
+  bersama oleh bundel API dan bundel halaman (`globalThis`). Di instance lain pencabutan tetap menunggu sampai 60 detik.
 - Tanpa `RESEND_API_KEY` email tidak terkirim (hanya dicatat di log).
 
 ---
@@ -283,7 +308,10 @@ Gerbang pengaman (tidak bisa dilewati):
 Mohon konfirmasi tertulis (jawaban mengubah matriks `tests/security/matrix.ts`):
 
 1. **Tambah peserta manual oleh Admin**: API saat ini mengizinkan Admin Paroki (sesuai §8b.8 "peserta datang langsung"
-   di layar absen), padahal §6 menulis "kelola peserta" hanya untuk PIC. Tetap izinkan Admin?
+   di layar absen), padahal §6 menulis "kelola peserta" hanya untuk PIC. Spesifikasi diam soal siapa yang boleh memakai
+   tombol "+ Tambah peserta" (§8b menyebut layar Absen = layar Admin, dan "PIC melengkapi datanya kemudian"); sekarang
+   PIC dan Admin keduanya boleh. Tetap izinkan Admin? Dan siapa yang melengkapi data peserta datang langsung (belum ada
+   layar sunting)?
 2. **Unduh laporan paroki oleh Admin**: saat ini Admin boleh melihat/mengunduh laporan parokinya sendiri; §6 menulis
    "laporan paroki" hanya untuk PIC. Tetap izinkan?
 3. **Data kesehatan**: Admin paroki yang bersangkutan dapat melihat data kesehatan peserta (sesuai §4). Benar?

@@ -24,6 +24,12 @@ export const ACC = {
 } as const;
 export const PASSWORD_HASH = "e2e-password-hash";
 export const MFA_ENC = "e2e-mfa-secret";
+/** Health notes of the first peserta of KEP A (index = peserta index); only the health screen may show them. */
+export const HEALTH_TEXT = { penyakit: "Asma-E2E-RAHASIA", kontak: "Ibu-E2E-0899-KONTAK", alergi: "Udang-E2E-RAHASIA" };
+const HEALTH_A: Record<string, unknown>[] = [
+  { [F.pendaftaranEvents.riwayatPenyakit]: HEALTH_TEXT.penyakit, [F.pendaftaranEvents.kontakDarurat]: HEALTH_TEXT.kontak },
+  { [F.pendaftaranEvents.riwayatAlergi]: HEALTH_TEXT.alergi },
+];
 export const NAMES_A = ["Agnes Lestari", "Bernadus Wijaya", "Cecilia Hartono", "Dominikus Surya", "Elisabeth Tan", "Fransiskus Adi", "Gabriella Putri", "Hendrikus Lim"];
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -39,8 +45,8 @@ type Rows = Record<string, { id: string; fields: Record<string, unknown> }[]>;
 const row = (id: string, fields: Record<string, unknown>) => ({ id, fields });
 
 export function seedRows(): Rows {
-  const pend = (id: string, ev: string, tu: string) =>
-    row(id, { [F.pendaftaranEvents.event]: [ev], [F.pendaftaranEvents.teamUmat]: [tu], [F.pendaftaranEvents.statusPendaftaran]: "Daftar", [F.pendaftaranEvents.kategoriKepesertaan]: "Peserta" });
+  const pend = (id: string, ev: string, tu: string, extra: Record<string, unknown> = {}) =>
+    row(id, { [F.pendaftaranEvents.event]: [ev], [F.pendaftaranEvents.teamUmat]: [tu], [F.pendaftaranEvents.statusPendaftaran]: "Daftar", [F.pendaftaranEvents.kategoriKepesertaan]: "Peserta", ...extra });
   const acc = (a: (typeof ACC)[keyof typeof ACC]) =>
     row(a.id, {
       [F.akunKep.email]: a.email,
@@ -87,7 +93,7 @@ export function seedRows(): Rows {
       row("recE2ETU00000000C1", { [F.teamUmat.namaLengkap]: "Xaverius Lain" }),
     ],
     [T.pendaftaranEvents]: [
-      ...NAMES_A.map((_, i) => pend(`recE2EPEND00000A${i + 1}`, "recE2EEVA00000001", `recE2ETU00000000${i + 1}`)),
+      ...NAMES_A.map((_, i) => pend(`recE2EPEND00000A${i + 1}`, "recE2EEVA00000001", `recE2ETU00000000${i + 1}`, HEALTH_A[i] ?? {})),
       pend("recE2EPEND00000B1", "recE2EEVA00000002", "recE2ETU00000000B1"),
       pend("recE2EPEND00000B2", "recE2EEVA00000002", "recE2ETU00000000B2"),
       pend("recE2EPEND00000C1", "recE2EEVB00000001", "recE2ETU00000000C1"),

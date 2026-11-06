@@ -227,7 +227,7 @@ test.describe("jadwal dan pewarta", () => {
     await page.goto(`/kep/${KEP_A}/jadwal`);
     await expect(page.getByText(/terkunci setelah (kep )?disetujui/i).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /ubah pewarta/i })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^simpan/i })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^simpan$/i })).toHaveCount(0); // pewarta: tidak ada; tanggal/jam tetap bisa disesuaikan (Simpan jadwal)
     const r = await page.request.post(`/api/kep/${KEP_A}/subevent/${SUB_A_TODAY}/pengajar`, {
       headers: { "Sec-Fetch-Site": "same-origin" },
       data: { pengajarIds: [PENGAJAR_1], opId: "op-e2e-lock-0001" },
