@@ -1,0 +1,278 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { F, T } from "@/lib/airtable/schema";
+import { fakeClientModule, resetStore, store } from "../helpers/fake-airtable";
+
+vi.mock("@/lib/airtable/client", () => fakeClientModule());
+vi.mock("@/lib/kep/readModel", () => ({ invalidateKepCache: vi.fn() }));
+
+import * as client from "@/lib/airtable/client";
+import { getAbsenSheet, mundurkanPeserta, setHadir, setSemuaHadir, tetapkanHasil } from "@/lib/kep/absensi";
+import type { Session } from "@/lib/auth/session";
+import { HttpError } from "@/lib/http/errors";
+
+const P = F.pendaftaranEvents;
+const PA = "recPAROKIA0000001";
+const PB = "recPAROKIB0000001";
+const pic: Session = { accountId: "recPIC0000000001", email: "pic@x.id", role: "PIC", parokiId: PA };
+const adm: Session = { accountId: "recADM0000000001", email: "adm@x.id", role: "ADMIN", parokiId: PA };
+const admB: Session = { accountId: "recADMB000000001", email: "admb@x.id", role: "ADMIN", parokiId: PB };
+const sep: Session = { accountId: "recSEPA000000001", email: "sep@x.id", role: "SEP", parokiId: null };
+
+const KEP_A = "recKEPA0000000001";
+const KEP_B = "recKEPB0000000001";
+const EV_A = "recEVA00000000001";
+const EV_B = "recEVB00000000001";
+const S1 = "recSUB1000000001";
+const S2 = "recSUB2000000001";
+const S3 = "recSUB3000000001";
+const SB = "recSUBB000000001";
+const pid = (n: number) => `recPEND${String(n).padStart(10, "0")}`;
+const tid = (n: number) => `recTEAM${String(n).padStart(10, "0")}`;
+const op = (n: string) => `op-${n}-0000000`;
+
+const hadirOf = (id: string) => ((store[T.pendaftaranEvents].find((r) => r.id === id)?.fields[P.pertemuanHadir] as string[]) ?? []);
+const rowOf = (id: string) => store[T.pendaftaranEvents].find((r) => r.id === id)!;
+const audits = (aksi?: string) => (store[T.auditKep] ?? []).filter((r) => !aksi || r.fields[F.auditKep.aksi] === aksi);
+const status = async (p: Promise<unknown>) => {
+  try {
+    await p;
+    return 200;
+  } catch (e) {
+    return e instanceof HttpError ? e.status : 500;
+  }
+};
+
+function seed(names = ["Yohanes", "bernadus", "Agnes", "Celine"], extra: Record<number, Record<string, unknown>> = {}) {
+  store[T.paroki] = [{ id: PA, fields: {} }, { id: PB, fields: {} }];
+  store[T.penyelenggaraKep] = [
+    { id: "recORGA0000000001", fields: { [F.penyelenggaraKep.paroki]: [PA] } },
+    { id: "recORGB0000000001", fields: { [F.penyelenggaraKep.paroki]: [PB] } },
+  ];
+  store[T.eventKep] = [
+    { id: KEP_A, fields: { [F.eventKep.events]: [EV_A], [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.statusPersetujuan]: "Disetujui" } },
+    { id: KEP_B, fields: { [F.eventKep.events]: [EV_B], [F.eventKep.penyelenggara]: ["recORGB0000000001"], [F.eventKep.statusPersetujuan]: "Disetujui" } },
+  ];
+  store[T.subEvent] = [
+    { id: S1, fields: { [F.subEvent.acara]: [EV_A], [F.subEvent.agenda]: "Bab 1", [F.subEvent.urutan]: 1, [F.subEvent.tanggal]: "2026-03-01" } },
+    { id: S2, fields: { [F.subEvent.acara]: [EV_A], [F.subEvent.agenda]: "Bab 2", [F.subEvent.urutan]: 2, [F.subEvent.tanggal]: "2026-03-08" } },
+    { id: S3, fields: { [F.subEvent.acara]: [EV_A], [F.subEvent.agenda]: "Bab 3", [F.subEvent.urutan]: 3, [F.subEvent.tanggal]: "2026-03-15" } },
+    { id: SB, fields: { [F.subEvent.acara]: [EV_B], [F.subEvent.agenda]: "Bab 1", [F.subEvent.urutan]: 1, [F.subEvent.tanggal]: "2026-03-01" } },
+  ];
+  store[T.teamUmat] = [...names.map((n, i) => ({ id: tid(i + 1), fields: { [F.teamUmat.namaLengkap]: n } })), { id: tid(99), fields: { [F.teamUmat.namaLengkap]: "Orang B" } }];
+  store[T.pendaftaranEvents] = [
+    ...names.map((_, i) => ({
+      id: pid(i + 1),
+      fields: { [P.event]: [EV_A], [P.teamUmat]: [tid(i + 1)], [P.statusPendaftaran]: "Confirmed", [P.kategoriKepesertaan]: "Peserta", ...(extra[i + 1] ?? {}) },
+    })),
+    { id: pid(99), fields: { [P.event]: [EV_B], [P.teamUmat]: [tid(99)], [P.statusPendaftaran]: "Confirmed", [P.kategoriKepesertaan]: "Peserta" } },
+  ];
+  store[T.auditKep] = [];
+}
+
+beforeEach(() => {
+  resetStore();
+  seed();
+  vi.clearAllMocks();
+});
+afterEach(() => vi.useRealTimers());
+
+describe("getAbsenSheet", () => {
+  it("sorts alphabetically (case-insensitive), flags mundur and excludes them from aktifCount", async () => {
+    seed(["Yohanes", "bernadus", "Agnes", "Celine"], { 4: { [P.keterangan]: "MENGUNDURKAN DIRI" } });
+    store[T.pendaftaranEvents][0].fields[P.pertemuanHadir] = [S1]; // Yohanes hadir
+    store[T.pendaftaranEvents][3].fields[P.pertemuanHadir] = [S1]; // Celine (mundur) hadir earlier
+    const s = await getAbsenSheet(pic, KEP_A, S1);
+    expect(s.subEvent).toEqual({ id: S1, agenda: "Bab 1", tanggal: "2026-03-01" });
+    expect(s.peserta.map((p) => p.nama)).toEqual(["Agnes", "bernadus", "Celine", "Yohanes"]);
+    expect(s.peserta.find((p) => p.nama === "Celine")).toMatchObject({ mundur: true, hadir: true });
+    expect(s.aktifCount).toBe(3);
+    expect(s.hadirCount).toBe(1);
+    expect(JSON.stringify(s)).not.toContain("Orang B");
+  });
+  it("excludes panitia and inactive registrations", async () => {
+    seed(["A", "B", "C"], { 2: { [P.kategoriKepesertaan]: "Panitia" }, 3: { [P.statusPendaftaran]: "Batal" } });
+    expect((await getAbsenSheet(pic, KEP_A, S1)).peserta.map((p) => p.nama)).toEqual(["A"]);
+  });
+  it("404 for another parish, 403 for SEP, 404 for a subEvent of another KEP", async () => {
+    expect(await status(getAbsenSheet(admB, KEP_A, S1))).toBe(404);
+    expect(await status(getAbsenSheet(sep, KEP_A, S1))).toBe(403);
+    expect(await status(getAbsenSheet(pic, KEP_A, SB))).toBe(404);
+    expect(await status(getAbsenSheet(pic, KEP_A, "recBOGUS"))).toBe(404);
+  });
+  it("409 when the KEP is not Disetujui", async () => {
+    store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Diajukan";
+    expect(await status(getAbsenSheet(pic, KEP_A, S1))).toBe(409);
+  });
+});
+
+describe("setHadir", () => {
+  it("same opId twice: exactly one link and one audit", async () => {
+    expect(await setHadir(pic, KEP_A, S1, pid(1), true, op("a"))).toEqual({ hadir: true });
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(hadirOf(pid(1))).toEqual([S1]);
+    expect(audits("absen_set")).toHaveLength(1);
+    expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(1);
+  });
+  it("different opId, same value: still one link, no extra audit or write", async () => {
+    await setHadir(adm, KEP_A, S1, pid(1), true, op("a"));
+    await setHadir(adm, KEP_A, S1, pid(1), true, op("b"));
+    expect(hadirOf(pid(1))).toEqual([S1]);
+    expect(audits("absen_set")).toHaveLength(1);
+    expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(1);
+  });
+  it("hadir=false removes only that SubEvent", async () => {
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    await setHadir(pic, KEP_A, S2, pid(1), true, op("b"));
+    await setHadir(pic, KEP_A, S1, pid(1), false, op("c"));
+    expect(hadirOf(pid(1))).toEqual([S2]);
+    expect(await setHadir(pic, KEP_A, S1, pid(1), false, op("d"))).toEqual({ hadir: false });
+    expect(audits("absen_set")).toHaveLength(3);
+  });
+  it("audit rows hold ids and flags only (no names, no health data)", async () => {
+    store[T.pendaftaranEvents][0].fields[P.riwayatPenyakit] = "diabetes";
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    const raw = JSON.stringify(audits());
+    expect(raw).not.toContain("diabetes");
+    expect(raw).not.toContain("Yohanes");
+  });
+  it("mundur peserta is rejected, also after being marked mundur", async () => {
+    await mundurkanPeserta(pic, KEP_A, pid(1), op("m"));
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(409);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), false, op("b")))).toBe(409);
+    expect(hadirOf(pid(1))).toEqual([]);
+  });
+  it("cross-parish ADMIN => 404; SEP => 403; malformed ids => 404; bad opId => 422", async () => {
+    expect(await status(setHadir(admB, KEP_A, S1, pid(1), true, op("a")))).toBe(404);
+    expect(await status(setHadir(sep, KEP_A, S1, pid(1), true, op("a")))).toBe(403);
+    expect(await status(setHadir(pic, KEP_A, S1, "nope", true, op("a")))).toBe(404);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, "short"))).toBe(422);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), "yes" as unknown as boolean, op("a")))).toBe(422);
+    expect(audits()).toHaveLength(0);
+  });
+  it("subEvent from another KEP => 404, peserta from another KEP => 404, nothing written", async () => {
+    expect(await status(setHadir(pic, KEP_A, SB, pid(1), true, op("a")))).toBe(404);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(99), true, op("b")))).toBe(404);
+    expect(hadirOf(pid(99))).toEqual([]);
+    expect(audits()).toHaveLength(0);
+    expect(vi.mocked(client.updateRecords)).not.toHaveBeenCalled();
+  });
+  it("409 when the KEP is not Disetujui", async () => {
+    store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Ditolak";
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(409);
+  });
+  it("concurrent calls on the same peserta (different subEvents) keep both links", async () => {
+    await Promise.all([
+      setHadir(pic, KEP_A, S1, pid(1), true, op("a")),
+      setHadir(pic, KEP_A, S2, pid(1), true, op("b")),
+      setHadir(pic, KEP_A, S3, pid(1), true, op("c")),
+    ]);
+    expect([...hadirOf(pid(1))].sort()).toEqual([S1, S2, S3]);
+  });
+  it("concurrent same opId does not double write or audit", async () => {
+    await Promise.all([setHadir(pic, KEP_A, S1, pid(1), true, op("a")), setHadir(pic, KEP_A, S1, pid(1), true, op("a"))]);
+    expect(hadirOf(pid(1))).toEqual([S1]);
+    expect(audits("absen_set")).toHaveLength(1);
+  });
+  it("post-write verify: a lost write is retried once", async () => {
+    vi.mocked(client.updateRecords).mockImplementationOnce(async () => []); // first write silently lost
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(hadirOf(pid(1))).toEqual([S1]);
+    expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(2);
+  });
+  it("post-write verify: gives up with 503 after one retry", async () => {
+    vi.mocked(client.updateRecords).mockImplementation(async () => []);
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(503);
+    expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(2);
+  });
+  it("a failed write does not poison the opId: the retry with the same opId writes", async () => {
+    vi.mocked(client.updateRecords).mockImplementationOnce(async () => {
+      throw new Error("boom");
+    });
+    expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(500);
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(hadirOf(pid(1))).toEqual([S1]);
+  });
+});
+
+describe("setSemuaHadir", () => {
+  it("marks every active peserta, skips mundur, returns the count; replay is a no-op", async () => {
+    seed(["A", "B", "C", "D"], { 3: { [P.keterangan]: "MENGUNDURKAN DIRI" } });
+    store[T.pendaftaranEvents][0].fields[P.pertemuanHadir] = [S2];
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3 });
+    expect(hadirOf(pid(1))).toEqual([S2, S1]);
+    expect(hadirOf(pid(3))).toEqual([]);
+    expect(hadirOf(pid(99))).toEqual([]);
+    const writes = vi.mocked(client.updateRecords).mock.calls.length;
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3 });
+    expect(vi.mocked(client.updateRecords).mock.calls.length).toBe(writes);
+  });
+  it("already-present peserta are not counted", async () => {
+    await setHadir(pic, KEP_A, S1, pid(1), true, op("a"));
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 3 });
+  });
+  it("SEP 403, other parish 404, foreign subEvent 404", async () => {
+    expect(await status(setSemuaHadir(sep, KEP_A, S1, op("s")))).toBe(403);
+    expect(await status(setSemuaHadir(admB, KEP_A, S1, op("s")))).toBe(404);
+    expect(await status(setSemuaHadir(pic, KEP_A, SB, op("s")))).toBe(404);
+  });
+});
+
+describe("mundurkanPeserta", () => {
+  it("sets Keterangan, audits once, replay and repeat are no-ops", async () => {
+    await mundurkanPeserta(adm, KEP_A, pid(2), op("m"));
+    expect(rowOf(pid(2)).fields[P.keterangan]).toBe("MENGUNDURKAN DIRI");
+    await mundurkanPeserta(adm, KEP_A, pid(2), op("m"));
+    await mundurkanPeserta(adm, KEP_A, pid(2), op("n"));
+    expect(audits("peserta_mundur")).toHaveLength(1);
+  });
+  it("keeps earlier attendance", async () => {
+    await setHadir(pic, KEP_A, S1, pid(2), true, op("a"));
+    await mundurkanPeserta(pic, KEP_A, pid(2), op("m"));
+    expect(hadirOf(pid(2))).toEqual([S1]);
+  });
+  it("SEP 403, other parish 404, peserta of another KEP 404", async () => {
+    expect(await status(mundurkanPeserta(sep, KEP_A, pid(2), op("m")))).toBe(403);
+    expect(await status(mundurkanPeserta(admB, KEP_A, pid(2), op("m")))).toBe(404);
+    expect(await status(mundurkanPeserta(pic, KEP_A, pid(99), op("m")))).toBe(404);
+    expect(rowOf(pid(99)).fields[P.keterangan]).toBeUndefined();
+  });
+});
+
+describe("tetapkanHasil", () => {
+  const at = (iso: string) => vi.useFakeTimers({ toFake: ["Date"], now: new Date(iso) });
+  it("rejected before the last pertemuan date (WIB), allowed from that date on", async () => {
+    at("2026-03-14T16:59:59Z"); // 23:59:59 WIB on the 14th
+    expect(await status(tetapkanHasil(pic, KEP_A, pid(1), "LULUS", op("h")))).toBe(409);
+    expect(rowOf(pid(1)).fields[P.keterangan]).toBeUndefined();
+    at("2026-03-14T17:00:00Z"); // 00:00 WIB on the 15th
+    await tetapkanHasil(pic, KEP_A, pid(1), "LULUS", op("h"));
+    expect(rowOf(pid(1)).fields[P.keterangan]).toBe("LULUS");
+    expect(audits("hasil_tetap")).toHaveLength(1);
+  });
+  it("TIDAK LULUS, change of result, replay and same value", async () => {
+    at("2026-04-01T00:00:00Z");
+    await tetapkanHasil(adm, KEP_A, pid(1), "TIDAK LULUS", op("h"));
+    expect(rowOf(pid(1)).fields[P.keterangan]).toBe("TIDAK LULUS");
+    await tetapkanHasil(adm, KEP_A, pid(1), "TIDAK LULUS", op("h"));
+    await tetapkanHasil(adm, KEP_A, pid(1), "TIDAK LULUS", op("i"));
+    expect(audits("hasil_tetap")).toHaveLength(1);
+    await tetapkanHasil(adm, KEP_A, pid(1), "LULUS", op("j"));
+    expect(rowOf(pid(1)).fields[P.keterangan]).toBe("LULUS");
+    expect(audits("hasil_tetap")).toHaveLength(2);
+  });
+  it("mundur peserta cannot be given a result", async () => {
+    at("2026-04-01T00:00:00Z");
+    await mundurkanPeserta(pic, KEP_A, pid(1), op("m"));
+    expect(await status(tetapkanHasil(pic, KEP_A, pid(1), "LULUS", op("h")))).toBe(409);
+    expect(rowOf(pid(1)).fields[P.keterangan]).toBe("MENGUNDURKAN DIRI");
+  });
+  it("validation, scope and roles", async () => {
+    at("2026-04-01T00:00:00Z");
+    expect(await status(tetapkanHasil(pic, KEP_A, pid(1), "MUNDUR" as never, op("h")))).toBe(422);
+    expect(await status(tetapkanHasil(sep, KEP_A, pid(1), "LULUS", op("h")))).toBe(403);
+    expect(await status(tetapkanHasil(admB, KEP_A, pid(1), "LULUS", op("h")))).toBe(404);
+    expect(await status(tetapkanHasil(pic, KEP_A, pid(99), "LULUS", op("h")))).toBe(404);
+    store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Diajukan";
+    expect(await status(tetapkanHasil(pic, KEP_A, pid(1), "LULUS", op("h")))).toBe(409);
+  });
+});
