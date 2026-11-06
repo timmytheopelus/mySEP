@@ -207,6 +207,30 @@ describe("createKep partial failure and idempotent retry", () => {
     expect(vi.mocked(client.createRecords).mock.calls.length).toBe(calls);
   });
 
+  it("A-fail / B-partial / A-retry never mixes schedules; B-retry completes", async () => {
+    const real = vi.mocked(client.createRecords).getMockImplementation()!;
+    let failEvents = true;
+    let subCalls = 0;
+    vi.mocked(client.createRecords).mockImplementation(async (t, r, e) => {
+      if (t === T.events && failEvents) throw new Error("Airtable request failed: HTTP 500");
+      if (t === T.subEvent && ++subCalls === 2) throw new Error("Airtable request failed: HTTP 500");
+      return real(t, r, e);
+    });
+    const A = input; // 2027-01-10
+    const B = { ...input, tanggalMulai: "2027-03-07" };
+    await expect(createKep(picA, A, { now: NOW })).rejects.toBeInstanceOf(KepPartialError); // marker A, no data row
+    failEvents = false;
+    await expect(createKep(picA, B, { now: NOW })).rejects.toBeInstanceOf(KepPartialError); // B changes date while no data exists
+    expect(rows(T.subEvent)).toHaveLength(10);
+    const calls = vi.mocked(client.createRecords).mock.calls.length;
+    await expect(createKep(picA, A, { now: NOW })).rejects.toMatchObject({ status: 409 });
+    expect(vi.mocked(client.createRecords).mock.calls.length).toBe(calls);
+    const r = await createKep(picA, B, { now: NOW });
+    expect(r.subEventIds).toHaveLength(28);
+    const dates = rows(T.subEvent).map((x) => x.fields[F.subEvent.tanggal]);
+    expect(dates).toEqual(scheduleDates("2027-03-07").length === 28 ? KEP_TEMPLATE.map((_, i) => scheduleDates("2027-03-07")[i]) : []);
+  });
+
   it("a retry never resumes an EventKEP whose organizer is not the PIC's own paroki", async () => {
     const real = vi.mocked(client.createRecords).getMockImplementation()!;
     let n = 0;

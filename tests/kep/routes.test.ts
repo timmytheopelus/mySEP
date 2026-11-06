@@ -71,6 +71,14 @@ describe("POST /api/kep", () => {
     expect(b.subEventIds).toHaveLength(28);
     expect(store[T.events][0].fields[F.events.namaAcara]).toBe("KEP PAROKI PANDU ANGKATAN 3");
   });
+  it("a repeated identical request answers 200 (existing ids) while the first answers 201", async () => {
+    const body = { angkatan: 5, tanggalMulai: future() };
+    const a = await call(createRoute, body, { as: pic });
+    const b = await call(createRoute, body, { as: pic });
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(200);
+    expect((await b.json()).eventKepId).toBe((await a.json()).eventKepId);
+  });
   it("a different parokiId in the body is a 404; unknown keys and bad types are 422", async () => {
     expect((await call(createRoute, { parokiId: PB, angkatan: 3, tanggalMulai: future() }, { as: pic })).status).toBe(404);
     expect((await call(createRoute, { parokiId: PA, angkatan: 3, tanggalMulai: future(), penyelenggara: ["recX00000000001"] }, { as: pic })).status).toBe(422);
