@@ -22,8 +22,8 @@ export const T = {
 // it never enters the write allowlist.
 export const EVENT_ID_FIELD = "fldhpu7dbyYUETwuY";
 
-// Value of Data Pengajar KEP "Status" (fldi7BZu04g8hHksR) that means an active pewarta. UNVERIFIED: the plan
-// names the choice "Aktif" but the exact option text/field type has not been read from the live base.
+// Value of Data Pengajar KEP "Status" (fldi7BZu04g8hHksR, singleSelect) that means an active pewarta
+// (verified live: it is the only choice).
 export const PENGAJAR_STATUS_AKTIF = "Aktif";
 
 export const SEL = {
@@ -69,9 +69,16 @@ export const F = {
     catatanSep: "fldhr8M2mdO1wHVPe",
     events: "fldyZwU5mLOjjatLs",
     penyelenggara: "fldSavviLVAE5xkxc",
+    submittedBy: "fldIcKDXLxLda0giU", // email
+    angkatan: "fldQkxnFnG4pgjhs0", // number
+    tanggalMulai: "fldvco2dffbupb92s", // date
+    tanggalSelesai: "fldR5nfZ1mFSkEBBi", // date
+    jenis: "fldSGYZSTOxZyxvG3", // singleSelect KEP/SEP
   },
   penyelenggaraKep: {
     paroki: "fld2sPNpixsNArdjf",
+    penyelenggara: "fldIrpPwvByuQjm1a", // name (singleLineText)
+    jenis: "fldfiKkzzpZw4o7jG", // singleSelect; choice "KEP" per ruling R6 (option text not re-read)
   },
   pengajarKep: {
     nama: "fldYEMM3xGzWnAJuX",
@@ -121,8 +128,17 @@ const setOf = (o: Record<string, string>) => new Set<string>(Object.values(o));
 // server code that sets them from trusted data (e.g. penyelenggara on create from session.parokiId)
 // by passing them explicitly as `extra` to the client. Never from request input.
 export const RESTRICTED: Record<string, Set<string>> = {
-  [T.eventKep]: new Set([F.eventKep.statusPersetujuan, F.eventKep.catatanSep, F.eventKep.penyelenggara]),
-  [T.penyelenggaraKep]: new Set([F.penyelenggaraKep.paroki]),
+  [T.eventKep]: new Set([
+    F.eventKep.statusPersetujuan,
+    F.eventKep.catatanSep,
+    F.eventKep.penyelenggara,
+    F.eventKep.submittedBy,
+    F.eventKep.angkatan,
+    F.eventKep.tanggalMulai,
+    F.eventKep.tanggalSelesai,
+    F.eventKep.jenis,
+  ]),
+  [T.penyelenggaraKep]: new Set([F.penyelenggaraKep.paroki, F.penyelenggaraKep.penyelenggara, F.penyelenggaraKep.jenis]),
 };
 const without = (o: Record<string, string>, drop?: Set<string>) =>
   new Set<string>(Object.values(o).filter((v) => !drop?.has(v)));

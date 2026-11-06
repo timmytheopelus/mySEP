@@ -16,8 +16,8 @@ export const POST = withAuth<{ id: string }>(
     if (!lim.ok) return tooMany(lim.retryAfter);
     const parsed = Body.safeParse(await readBody(req));
     if (!parsed.success) throw new HttpError(422, "Keputusan tidak valid");
-    await decideKep(session, params.id, parsed.data.keputusan, parsed.data.catatan ?? "");
-    return json({ ok: true });
+    const r = await decideKep(session, params.id, parsed.data.keputusan, parsed.data.catatan ?? "");
+    return json({ ok: true, emailTerkirim: r.emailTerkirim });
   },
   { roles: ["SEP"] },
 );

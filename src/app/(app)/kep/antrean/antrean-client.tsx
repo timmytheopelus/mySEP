@@ -11,30 +11,26 @@ export default function AntreanClient() {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<{ items?: Item[]; error?: string }> => {
     try {
       const res = await fetch("/api/kep");
       const data = (await res.json().catch(() => ({}))) as { antrean?: Item[]; error?: string };
-      if (res.ok) setItems(data.antrean ?? []);
-      else setMsg({ ok: false, text: data.error ?? "Gagal memuat antrean" });
+      return res.ok ? { items: data.antrean ?? [] } : { error: data.error ?? "Gagal memuat antrean" };
     } catch {
-      setMsg({ ok: false, text: "Tidak dapat terhubung. Coba lagi." });
+      return { error: "Tidak dapat terhubung. Coba lagi." };
     }
+  }, []);
+  const apply = useCallback((r: { items?: Item[]; error?: string }) => {
+    if (r.items) setItems(r.items);
+    else setMsg({ ok: false, text: r.error ?? "Gagal memuat antrean" });
   }, []);
   useEffect(() => {
     let live = true;
-    fetch("/api/kep")
-      .then(async (res) => ({ ok: res.ok, data: (await res.json().catch(() => ({}))) as { antrean?: Item[]; error?: string } }))
-      .then((r) => {
-        if (!live) return;
-        if (r.ok) setItems(r.data.antrean ?? []);
-        else setMsg({ ok: false, text: r.data.error ?? "Gagal memuat antrean" });
-      })
-      .catch(() => live && setMsg({ ok: false, text: "Tidak dapat terhubung. Coba lagi." }));
+    load().then((r) => live && apply(r));
     return () => {
       live = false;
     };
-  }, []);
+  }, [load, apply]);
 
   async function decide(it: Item, keputusan: "Disetujui" | "Ditolak") {
     const catatan = (notes[it.id] ?? "").trim();
@@ -50,9 +46,12 @@ export default function AntreanClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keputusan, catatan }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      setMsg(res.ok ? { ok: true, text: `${it.nama}: ${keputusan}.` } : { ok: false, text: data.error ?? "Gagal menyimpan keputusan" });
-      if (res.ok) await load();
+      const data = (await res.json().catch(() => ({}))) as { error?: string; emailTerkirim?: boolean };
+      if (res.ok) {
+        const warn = data.emailTerkirim === false ? " Email pemberitahuan gagal terkirim: mohon beri tahu PIC paroki secara manual." : "";
+        setMsg({ ok: data.emailTerkirim !== false, text: `${it.nama}: ${keputusan}.${warn}` });
+        apply(await load());
+      } else setMsg({ ok: false, text: data.error ?? "Gagal menyimpan keputusan" });
     } catch {
       setMsg({ ok: false, text: "Tidak dapat terhubung. Coba lagi." });
     } finally {

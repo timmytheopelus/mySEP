@@ -32,7 +32,15 @@ export type CreateKepInput = { parokiId?: string; angkatan: number; tanggalMulai
 const inFlight = new Set<string>();
 
 // Restricted fields the server sets itself on create (never from request data).
-const KEP_SERVER_FIELDS = new Set([F.eventKep.statusPersetujuan, F.eventKep.penyelenggara]);
+const KEP_SERVER_FIELDS = new Set([
+  F.eventKep.statusPersetujuan,
+  F.eventKep.penyelenggara,
+  F.eventKep.submittedBy,
+  F.eventKep.angkatan,
+  F.eventKep.tanggalMulai,
+  F.eventKep.tanggalSelesai,
+  F.eventKep.jenis,
+]);
 const ORG_SERVER_FIELDS = RESTRICTED[T.penyelenggaraKep];
 
 /** Escape a value for a double-quoted Airtable formula string (values here come from our own data). */
@@ -83,35 +91,69 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
   try {
     // ---- reads and duplicate detection (no writes yet) ----
     const [events, keps, orgs, audits, subs] = await Promise.all([
-      listRecords(T.events, { fields: [F.events.namaAcara], filterByFormula: `{${F.events.namaAcara}} = ${q(nama)}` }),
-      listRecords(T.eventKep, { fields: [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan] }),
+      listRecords(T.events, { fields: [F.events.namaAcara, F.events.kelompokAcara], filterByFormula: `{${F.events.namaAcara}} = ${q(nama)}` }),
+      listRecords(T.eventKep, { fields: [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan, F.eventKep.angkatan] }),
       listRecords(T.penyelenggaraKep, { fields: [F.penyelenggaraKep.paroki] }),
-      listRecords(T.auditKep, { fields: [F.auditKep.aksi, F.auditKep.targetId], filterByFormula: `OR({${F.auditKep.aksi}} = "create_kep_mulai", {${F.auditKep.aksi}} = "create_kep")` }),
+      listRecords(T.auditKep, { fields: [F.auditKep.aksi, F.auditKep.targetId, F.auditKep.sesudah], filterByFormula: `OR({${F.auditKep.aksi}} = "create_kep_mulai", {${F.auditKep.aksi}} = "create_kep")` }),
       listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.urutan] }),
     ]);
     const auditOf = (aksi: string, target: string) =>
       audits.some((a) => a.fields[F.auditKep.aksi] === aksi && a.fields[F.auditKep.targetId] === target);
     const event = events.find((e) => e.fields[F.events.namaAcara] === nama);
-    const started = auditOf("create_kep_mulai", key);
+    const markers = audits.filter((a) => a.fields[F.auditKep.aksi] === "create_kep_mulai" && a.fields[F.auditKep.targetId] === key);
+    const started = markers.length > 0;
     if (event && !started) throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
+    if (event && event.fields[F.events.kelompokAcara] !== "KEP") throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
+    const ownOrgIds = new Set(orgs.filter((o) => ids(o.fields[F.penyelenggaraKep.paroki]).includes(own)).map((o) => o.id));
     const kep = event ? keps.find((k) => ids(k.fields[F.eventKep.events]).includes(event.id)) : undefined;
+    // Any other EventKEP of this organizer with the same angkatan (legacy names included) blocks a duplicate.
+    const clash = keps.some(
+      (k) => k !== kep && k.fields[F.eventKep.angkatan] === angkatan && ids(k.fields[F.eventKep.penyelenggara]).some((o) => ownOrgIds.has(o)),
+    );
+    if (clash) throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
+    if (kep && !ids(kep.fields[F.eventKep.penyelenggara]).some((o) => ownOrgIds.has(o)))
+      throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
+    if (event) {
+      // Never mix schedules: a resume must use the start date of the earlier attempt.
+      const earlier = markers
+        .map((m) => {
+          try {
+            return (JSON.parse(String(m.fields[F.auditKep.sesudah] ?? "")) as { tanggalMulai?: string }).tanggalMulai;
+          } catch {
+            return undefined;
+          }
+        })
+        .find((d) => typeof d === "string");
+      if (earlier && earlier !== tanggalMulai)
+        throw new HttpError(409, `Pengajuan KEP ini sudah dimulai dengan tanggal mulai ${earlier}. Kirim ulang dengan tanggal yang sama untuk melanjutkan.`);
+    }
     const existingSubs = new Map<number, string>();
     if (event)
       for (const s of subs)
         if (ids(s.fields[F.subEvent.acara]).includes(event.id) && typeof s.fields[F.subEvent.urutan] === "number")
           existingSubs.set(s.fields[F.subEvent.urutan] as number, s.id);
-    if (event && kep && auditOf("create_kep", kep.id) && KEP_TEMPLATE.every((e) => existingSubs.has(e.urutan)))
-      throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
+    if (event && kep && auditOf("create_kep", kep.id) && KEP_TEMPLATE.every((e) => existingSubs.has(e.urutan))) {
+      return {
+        eventKepId: kep.id,
+        eventId: event.id,
+        subEventIds: KEP_TEMPLATE.map((e) => existingSubs.get(e.urutan) as string),
+        sudahAda: true as const,
+      };
+    }
 
     // ---- writes ----
     if (!started) {
       await logAudit({ actorEmail: actor.email, action: "create_kep_mulai", targetId: key, after: { nama, tanggalMulai } });
     }
     wrote = true;
-    const org = orgs.find((o) => ids(o.fields[F.penyelenggaraKep.paroki]).includes(own));
+    const org = orgs.find((o) => ownOrgIds.has(o.id));
     if (org) created.penyelenggaraId = org.id;
     else {
-      const [r] = await createRecords(T.penyelenggaraKep, [{ [F.penyelenggaraKep.paroki]: [own] }], ORG_SERVER_FIELDS);
+      const [r] = await createRecords(
+        T.penyelenggaraKep,
+        [{ [F.penyelenggaraKep.paroki]: [own], [F.penyelenggaraKep.penyelenggara]: parokiNama, [F.penyelenggaraKep.jenis]: "KEP" }],
+        ORG_SERVER_FIELDS,
+      );
       created.penyelenggaraId = r.id;
     }
     if (event) created.eventId = event.id;
@@ -133,6 +175,11 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
             [F.eventKep.events]: [created.eventId],
             [F.eventKep.statusPersetujuan]: "Diajukan",
             [F.eventKep.penyelenggara]: [created.penyelenggaraId],
+            [F.eventKep.submittedBy]: actor.email,
+            [F.eventKep.angkatan]: angkatan,
+            [F.eventKep.tanggalMulai]: tanggalMulai,
+            [F.eventKep.tanggalSelesai]: scheduleDates(tanggalMulai)[KEP_TEMPLATE.length - 1],
+            [F.eventKep.jenis]: "KEP",
           },
         ],
         KEP_SERVER_FIELDS,
@@ -162,6 +209,7 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
       eventKepId: created.eventKepId as string,
       eventId: created.eventId as string,
       subEventIds: KEP_TEMPLATE.map((e) => existingSubs.get(e.urutan) as string),
+      sudahAda: false as const,
     };
   } catch (e) {
     if (wrote && !(e instanceof HttpError)) throw new KepPartialError(created, e);

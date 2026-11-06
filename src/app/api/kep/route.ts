@@ -28,7 +28,7 @@ export const POST = withAuth(
     if (!parsed.success) throw new HttpError(422, "Data KEP tidak valid");
     try {
       const r = await createKep(session, parsed.data);
-      return json(r, 201);
+      return json(r, r.sudahAda ? 200 : 201);
     } catch (e) {
       if (e instanceof KepPartialError)
         return json({ error: "Pembuatan KEP belum selesai. Kirim ulang permintaan yang sama untuk melanjutkan.", sudahTerbuat: e.created }, 500);

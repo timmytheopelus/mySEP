@@ -18,19 +18,25 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 export type Keputusan = "Disetujui" | "Ditolak";
 
 /** Recipients of a decision: active PIC accounts of the KEP's organizing paroki(s) + the submitter from the audit row. */
-async function recipients(kepId: string, organizerIds: string[]): Promise<{ email: string; nama?: string }[]> {
+async function recipients(kepId: string, organizerIds: string[], submittedBy: string): Promise<{ email: string; nama?: string }[]> {
   const [orgs, accounts, audits] = await Promise.all([
     listRecords(T.penyelenggaraKep, { fields: [F.penyelenggaraKep.paroki] }),
     listAllAccounts(),
-    listRecords(T.auditKep, { fields: [F.auditKep.aksi, F.auditKep.pelaku, F.auditKep.targetId] }),
+    listRecords(T.auditKep, {
+      fields: [F.auditKep.aksi, F.auditKep.pelaku, F.auditKep.targetId],
+      filterByFormula: `{${F.auditKep.aksi}} = "create_kep"`,
+    }),
   ]);
   const parokis = new Set(orgs.filter((o) => organizerIds.includes(o.id)).flatMap((o) => ids(o.fields[F.penyelenggaraKep.paroki])));
   const out = new Map<string, { email: string; nama?: string }>();
   for (const a of accounts)
     if (a.active && a.role === "PIC" && a.parokiId && parokis.has(a.parokiId)) out.set(a.email, { email: a.email, nama: a.nama || undefined });
-  for (const a of audits) {
-    if (a.fields[F.auditKep.aksi] !== "create_kep" || a.fields[F.auditKep.targetId] !== kepId) continue;
-    const email = str(a.fields[F.auditKep.pelaku]).trim().toLowerCase();
+  // SubmittedBy on the EventKEP first; the create_kep audit row is the fallback (older rows).
+  const submitters = [submittedBy];
+  for (const a of audits)
+    if (a.fields[F.auditKep.aksi] === "create_kep" && a.fields[F.auditKep.targetId] === kepId) submitters.push(str(a.fields[F.auditKep.pelaku]));
+  for (const raw of submitters) {
+    const email = raw.trim().toLowerCase();
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !out.has(email)) out.set(email, { email });
   }
   return [...out.values()];
@@ -41,7 +47,7 @@ async function recipients(kepId: string, organizerIds: string[]): Promise<{ emai
  * SEP-only fields, then the emails (a mail failure never undoes the decision). Deciding again is a 409,
  * except Ditolak -> Disetujui with a catatan.
  */
-export async function decideKep(actor: Session, eventKepId: string, decision: Keputusan, catatan: string): Promise<void> {
+export async function decideKep(actor: Session, eventKepId: string, decision: Keputusan, catatan: string): Promise<{ emailTerkirim: boolean }> {
   requireRole(actor, ["SEP"]);
   const { eventKep } = await assertKepInScope(actor, eventKepId);
   if (decision !== "Disetujui" && decision !== "Ditolak") throw new HttpError(422, "Keputusan tidak valid");
@@ -76,6 +82,7 @@ export async function decideKep(actor: Session, eventKepId: string, decision: Ke
     invalidateKepCache();
   }
 
+  let emailTerkirim = true;
   try {
     let kepNama = "KEP";
     const eventId = ids(eventKep.fields[F.eventKep.events])[0];
@@ -86,13 +93,23 @@ export async function decideKep(actor: Session, eventKepId: string, decision: Ke
     } catch {
       /* APP_BASE_URL not configured: the decision mail goes out without a link */
     }
-    const to = await recipients(eventKepId, ids(eventKep.fields[F.eventKep.penyelenggara]));
-    await Promise.allSettled(
+    const to = await recipients(eventKepId, ids(eventKep.fields[F.eventKep.penyelenggara]), str(eventKep.fields[F.eventKep.submittedBy]));
+    const results = await Promise.allSettled(
       to.map((r) => sendMail(r.email, "kep_keputusan", { link, nama: r.nama, kepNama, keputusan: decision, catatan: note })),
     );
+    if (results.some((r) => r.status === "rejected")) emailTerkirim = false;
   } catch {
-    console.error("kep decision email failed"); // the decision itself is already saved and audited
+    emailTerkirim = false;
   }
+  if (!emailTerkirim) {
+    console.error("kep decision email failed"); // the decision itself is already saved and audited
+    try {
+      await logAudit({ actorEmail: actor.email, action: "decision_email_failed", targetId: eventKepId, after: { keputusan: decision } });
+    } catch {
+      console.error("audit of email failure also failed");
+    }
+  }
+  return { emailTerkirim };
 }
 
 export type AntreanItem = { id: string; nama: string; parokiNama: string; tanggalMulai: string; status: string; catatan: string };
@@ -136,7 +153,7 @@ export async function listKepQueue(actor: Session): Promise<AntreanItem[]> {
   return items.sort((a, b) => Number(b.status === "Diajukan") - Number(a.status === "Diajukan") || a.nama.localeCompare(b.nama));
 }
 
-const isAktif = (v: unknown) => v === true || (typeof v === "string" && v.trim().toLowerCase() === PENGAJAR_STATUS_AKTIF.toLowerCase());
+const isAktif = (v: unknown) => typeof v === "string" && v.trim().toLowerCase() === PENGAJAR_STATUS_AKTIF.toLowerCase();
 
 /** PIC of the owning paroki sets the pewarta of one pertemuan; only pewarta with status Aktif are accepted. */
 export async function assignPengajar(actor: Session, subEventId: string, pengajarIds: string[]): Promise<void> {
