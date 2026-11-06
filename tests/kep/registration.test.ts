@@ -773,4 +773,18 @@ describe("POST /api/kep/[id]/peserta (manual)", () => {
   it("malformed kep id -> 404", async () => {
     expect((await callManual("nope", valid(), PIC_A)).status).toBe(404);
   });
+  it("health consent given by the participant and recorded by the PIC is audited as such (no health text in the audit)", async () => {
+    const res = await callManual(KEP, valid({ riwayatPenyakit: "Asma berat SANGATRAHASIA", persetujuanKesehatan: true }), PIC_A);
+    expect(res.status).toBe(201);
+    const rows = (store[T.auditKep] ?? []).filter((x) => x.fields[F.auditKep.aksi] === "peserta_manual_daftar");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(String(rows[0].fields[F.auditKep.sesudah]))).toEqual({ persetujuanKesehatan: "dicatat_pic" });
+    expect(JSON.stringify(store[T.auditKep])).not.toContain("SANGATRAHASIA");
+  });
+  it("without health data the audit says no consent was needed", async () => {
+    const res = await callManual(KEP, valid({ riwayatPenyakit: undefined, riwayatAlergi: undefined, obatRutin: undefined }), PIC_A);
+    expect(res.status).toBe(201);
+    const row = (store[T.auditKep] ?? []).find((x) => x.fields[F.auditKep.aksi] === "peserta_manual_daftar")!;
+    expect(JSON.parse(String(row.fields[F.auditKep.sesudah]))).toEqual({ persetujuanKesehatan: "tidak_ada" });
+  });
 });

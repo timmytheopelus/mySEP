@@ -32,6 +32,8 @@ export default defineConfig({
         AIRTABLE_BASE_ID: "appE2E",
         SESSION_SECRET,
         ABSEN_RECHECK_MS: "10",
+        REG_TOKEN_SECRET: "e2e-registration-token-secret-0123456789",
+        APP_BASE_URL: "http://localhost:3000",
       },
     },
   ],

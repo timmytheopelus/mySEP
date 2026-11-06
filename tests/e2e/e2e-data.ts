@@ -11,6 +11,9 @@ export const KEP_A = "recE2EKEPA0000001"; // 3 pertemuan: kemarin, hari ini, +7 
 export const KEP_B = "recE2EKEPB0000001"; // 1 pertemuan hari ini (penetapan terbuka); 2 peserta
 export const KEP_C = "recE2EKEPC0000001"; // paroki lain
 export const SUB_A_TODAY = "recE2ESUBA0000002";
+export const PENGAJAR_1 = "recE2EPENGAJAR001";
+export const PENGAJAR_2 = "recE2EPENGAJAR002";
+export const PENGAJAR_OFF = "recE2EPENGAJAR003";
 export const ACC = {
   picA: { id: "recE2EPICA00000001", email: "pic-a@e2e.test", role: "PIC Paroki", paroki: PA },
   admA: { id: "recE2EADMA00000001", email: "adm-a@e2e.test", role: "Admin Paroki", paroki: PA },
@@ -60,8 +63,8 @@ export function seedRows(): Rows {
       row("recE2EEVB00000001", { [F.events.namaAcara]: "KEP E2E C" }),
     ],
     [T.eventKep]: [
-      row(KEP_A, { [F.eventKep.events]: ["recE2EEVA00000001"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui" }),
-      row(KEP_B, { [F.eventKep.events]: ["recE2EEVA00000002"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui" }),
+      row(KEP_A, { [F.eventKep.events]: ["recE2EEVA00000001"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui", [F.eventKep.angkatan]: 3, [F.eventKep.tanggalMulai]: wib(-8), [F.eventKep.tanggalSelesai]: wib(190) }),
+      row(KEP_B, { [F.eventKep.events]: ["recE2EEVA00000002"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui", [F.eventKep.angkatan]: 4 }),
       row(KEP_C, { [F.eventKep.events]: ["recE2EEVB00000001"], [F.eventKep.penyelenggara]: ["recE2EORGB0000001"], [F.eventKep.statusPersetujuan]: "Disetujui" }),
     ],
     [T.subEvent]: [
@@ -82,6 +85,11 @@ export function seedRows(): Rows {
       pend("recE2EPEND00000B1", "recE2EEVA00000002", "recE2ETU00000000B1"),
       pend("recE2EPEND00000B2", "recE2EEVA00000002", "recE2ETU00000000B2"),
       pend("recE2EPEND00000C1", "recE2EEVB00000001", "recE2ETU00000000C1"),
+    ],
+    [T.pengajarKep]: [
+      row(PENGAJAR_1, { [F.pengajarKep.nama]: "Pewarta Satu", [F.pengajarKep.status]: "Aktif" }),
+      row(PENGAJAR_2, { [F.pengajarKep.nama]: "Pewarta Dua", [F.pengajarKep.status]: "Aktif" }),
+      row(PENGAJAR_OFF, { [F.pengajarKep.nama]: "Pewarta Pensiun", [F.pengajarKep.status]: "Tidak Aktif" }),
     ],
     [T.akunKep]: Object.values(ACC).map(acc),
     [T.auditKep]: [],
