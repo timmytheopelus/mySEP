@@ -39,7 +39,7 @@ export const validXlsx = (n = 3) => xlsx(Array.from({ length: n }, (_, i) => goo
 export const emptyXlsx = () => xlsx([]);
 
 /** Minimal ZIP writer. `lie` makes the central directory declare a huge uncompressed size. */
-export function zip(entries: { name: string; data: Buffer; declaredSize?: number }[]): Buffer {
+export function zip(entries: { name: string; data: Buffer; declaredSize?: number; localSize?: number }[]): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let off = 0;
@@ -49,7 +49,7 @@ export function zip(entries: { name: string; data: Buffer; declaredSize?: number
     const crc = crc32(e.data);
     const lh = Buffer.alloc(30);
     lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8);
-    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(e.data.length, 22); lh.writeUInt16LE(name.length, 26);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(e.localSize ?? e.data.length, 22); lh.writeUInt16LE(name.length, 26);
     const ch = Buffer.alloc(46);
     ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(8, 10);
     ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(e.declaredSize ?? e.data.length, 24);
@@ -83,3 +83,23 @@ export const zipBomb = () =>
     { name: "xl/worksheets/sheet1.xml", data: Buffer.alloc(30 * 1024 * 1024, 0x61) }, // ~30 KB compressed, 30 MB inflated
   ]);
 export const lyingZip = () => zip([{ name: "[Content_Types].xml", data: CT(), declaredSize: 900 * 1024 * 1024 }]);
+
+/** Both headers claim 1000 bytes while the entry really inflates to 30 MB. */
+export const understatedBomb = () =>
+  zip([
+    { name: "[Content_Types].xml", data: CT() },
+    { name: "xl/worksheets/sheet1.xml", data: Buffer.alloc(30 * 1024 * 1024, 0x61), declaredSize: 1000, localSize: 1000 },
+  ]);
+/** Same, but modest (316 KB padded sheet) with understated sizes. */
+export const understatedPadded = () =>
+  zip([
+    { name: "[Content_Types].xml", data: CT() },
+    { name: "xl/worksheets/sheet1.xml", data: Buffer.alloc(316 * 1024, 0x20), declaredSize: 1000, localSize: 1000 },
+  ]);
+export async function farRowXlsx(): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Peserta");
+  ws.addRow(HEADERS);
+  ws.getCell(1048576, 1).value = " ";
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}

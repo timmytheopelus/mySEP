@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import ExcelJS from "exceljs";
 import { EVENT_ID_FIELD, F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
-import { HEADERS, emptyXlsx, goodRow, lyingZip, macroXlsm, validXlsx, vbaInPlainXlsx, xlsx, zip, zipBomb } from "./fixtures/build";
+import { HEADERS, emptyXlsx, farRowXlsx, goodRow, lyingZip, macroXlsm, understatedBomb, understatedPadded, validXlsx, vbaInPlainXlsx, xlsx, zip, zipBomb } from "./fixtures/build";
 
 vi.mock("@/lib/airtable/client", () => fakeClientModule());
 vi.mock("@/lib/kep/readModel", async (orig) => ({ ...(await orig<object>()), invalidateKepCache: vi.fn() }));
@@ -123,6 +123,17 @@ describe("buildTemplateXlsx", () => {
   });
 });
 
+describe("template neutralization", () => {
+  it("parish names and example cells that start with a formula character are quoted in the template", async () => {
+    const buf = await buildTemplateXlsx({ parokiNames: ["=HYPERLINK(\"http://x\")", "Pandu"] });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet("Daftar Paroki")!;
+    expect(String(ws.getRow(2).getCell(1).value)).toBe("'=HYPERLINK(\"http://x\")");
+    expect(String(wb.worksheets[0].getRow(2).getCell(8).value)).toBe("'=HYPERLINK(\"http://x\")");
+  });
+});
+
 describe("parseImport", () => {
   it("parses a valid file", async () => {
     const r = await parse(await validXlsx(3));
@@ -147,7 +158,7 @@ describe("parseImport", () => {
     expect(r.rows).toHaveLength(1);
     expect(r.errors.map((e) => e.row)).toEqual([2, 4]);
   });
-  it("formula-looking text is neutralized and formula cells are read as their text result, never evaluated", async () => {
+  it("formula-looking text is stored unchanged (no quote prefix) and formula cells are read as their text result, never evaluated", async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Peserta");
     ws.addRow(HEADERS);
@@ -160,10 +171,30 @@ describe("parseImport", () => {
     ws.getRow(2).getCell(16).value = { richText: [{ text: "+ud" }, { text: "ang" }] };
     const r = await parse(Buffer.from(await wb.xlsx.writeBuffer()));
     expect(r.errors).toEqual([]);
-    expect(r.rows[0].alamat).toBe(`'=HYPERLINK("http://evil","x")`);
-    expect(r.rows[0].riwayatPenyakit).toBe("'@cmd");
-    expect(r.rows[0].riwayatAlergi).toBe("'+udang");
+    expect(r.rows[0].alamat).toBe('=HYPERLINK("http://evil","x")');
+    expect(r.rows[0].riwayatPenyakit).toBe("@cmd");
+    expect(r.rows[0].riwayatAlergi).toBe("+udang");
     expect(r.rows[0].namaBaptis).toBe("Maria");
+  });
+  it("names starting with a formula character stay rejected by the name pattern", async () => {
+    const r = await parse(await xlsx([goodRow(1, { "Nama Lengkap": "=cmd" })]));
+    expect(r.errors[0].row).toBe(2);
+  });
+  it("consent accepts only ya/iya (any case) and boolean true", async () => {
+    const mk = (v: unknown) => goodRow(1, { "Riwayat Alergi": "udang", "Persetujuan Data Kesehatan": v });
+    const r = await parse(await xlsx([mk("YA"), mk("Iya"), mk(true), mk("y"), mk("yes"), mk("1"), mk("true")]));
+    expect(r.items.map((i) => i.row)).toEqual([2, 3, 4]);
+  });
+  it("numeric phone-like cells in contact columns get their leading zero back", async () => {
+    const r = await parse(await xlsx([goodRow(1, { "Pendukung Doa 1 Kontak": 81200000001, "Kontak Darurat": 811111111111 })]));
+    expect(r.errors).toEqual([]);
+    expect(r.rows[0].pendukungDoa[0].kontak).toBe("081200000001");
+    expect(r.rows[0].kontakDarurat).toBe("0811111111111");
+  });
+  it("only a row identical to the example is rejected; a real person whose name starts with Contoh is fine", async () => {
+    const r = await parse(await xlsx([goodRow(1, { "Nama Lengkap": "Contohwati Santoso" })]));
+    expect(r.errors).toEqual([]);
+    expect(r.rows).toHaveLength(1);
   });
   it("Date cells and numeric WhatsApp cells are accepted", async () => {
     const r = await parse(await xlsx([goodRow(1, { "Tanggal Lahir": new Date(Date.UTC(1990, 4, 3)), "Nomor WhatsApp": 81234567890 })]));
@@ -188,6 +219,19 @@ describe("parseImport", () => {
     await expect(parse(lyingZip())).rejects.toBeInstanceOf(ImportFileError);
     await expect(parse(zip([{ name: "x.txt", data: Buffer.from("x") }]))).rejects.toBeInstanceOf(ImportFileError);
   });
+  it("understated-size zip bombs are rejected quickly (headers are not trusted)", async () => {
+    const t = Date.now();
+    await expect(parse(understatedBomb())).rejects.toBeInstanceOf(ImportFileError);
+    await expect(parse(understatedPadded())).rejects.toBeInstanceOf(ImportFileError);
+    expect(Date.now() - t).toBeLessThan(3000);
+  });
+  it("a tiny file with a cell at A1048576 is a clean 422, not a million-row walk", async () => {
+    const f = await farRowXlsx();
+    expect(f.length).toBeLessThan(20000);
+    const t = Date.now();
+    await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
+    expect(Date.now() - t).toBeLessThan(3000);
+  }, 30000);
   it("rejects more than 500 data rows, accepts exactly 500", async () => {
     const mk = (n: number) => xlsx(Array.from({ length: n }, (_, i) => goodRow(i + 1)));
     await expect(parse(await mk(501))).rejects.toThrow(/500/);
@@ -343,5 +387,40 @@ describe("commit route", () => {
     expect(b.registered + b.failed).toBe(2);
     expect(b.failed).toBe(1);
     expect(JSON.stringify(b)).not.toMatch(/maria@x|Airtable/);
+  });
+  it("409 while another import of the same file is recorded as started and recent without a finish", async () => {
+    const file = await validXlsx(2);
+    const opId = createHash("sha256").update(`${KEP}:${sha(file)}`).digest("hex");
+    (store[T.auditKep] ??= []).push({ id: "recAUD000000001x", fields: { [F.auditKep.aksi]: "import_peserta_mulai", [F.auditKep.targetId]: KEP, [F.auditKep.sesudah]: JSON.stringify({ opId, t: Date.now() - 60_000 }) } });
+    expect((await post(commitRoute, file, { as: PIC_A })).status).toBe(409);
+    expect(pendaftaran()).toHaveLength(0);
+    // an old orphan start (crashed run) no longer blocks
+    store[T.auditKep][0].fields[F.auditKep.sesudah] = JSON.stringify({ opId, t: Date.now() - 3 * 3600_000 });
+    expect((await post(commitRoute, file, { as: PIC_A })).status).toBe(200);
+    expect(pendaftaran()).toHaveLength(2);
+  });
+  it("a run with a transient failure is retryable with the same file; validation-only failures replay", async () => {
+    const real = vi.mocked(client.createRecords).getMockImplementation()!;
+    let failedOnce = false;
+    vi.mocked(client.createRecords).mockImplementation(async (t, r, e) => {
+      if (t === T.pendaftaranEvents && !failedOnce) {
+        failedOnce = true;
+        throw new Error("Airtable request failed: HTTP 500");
+      }
+      return real(t, r, e);
+    });
+    const file = await validXlsx(2);
+    const a = await (await post(commitRoute, file, { as: PIC_A })).json();
+    expect(a).toMatchObject({ registered: 1, failed: 1 });
+    vi.mocked(client.createRecords).mockImplementation(real);
+    const b = await (await post(commitRoute, file, { as: PIC_A })).json();
+    expect(b.ulang).toBeUndefined();
+    expect(b).toMatchObject({ registered: 1, alreadyRegistered: 1, failed: 0 });
+    expect(pendaftaran()).toHaveLength(2);
+    // validation-only failure: replayed
+    const bad = await xlsx([goodRow(5), goodRow(6, { Email: "x" })]);
+    await post(commitRoute, bad, { as: PIC_A });
+    const again = await (await post(commitRoute, bad, { as: PIC_A })).json();
+    expect(again.ulang).toBe(true);
   });
 });
