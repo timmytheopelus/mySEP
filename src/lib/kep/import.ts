@@ -188,15 +188,25 @@ type Raw = string | number | boolean;
 const MAX_CELLS = 20_000;
 const MAX_CELL_CHARS = 2000;
 const MAX_SHARED = 50_000;
+const MAX_DEPTH = 64;
+const MAX_ELEMENTS = 200_000;
 const local = (n: string) => n.slice(n.lastIndexOf(":") + 1);
 const bad = (m = "Berkas bukan Excel (.xlsx) yang sah") => reject(m);
 
 function sax(xml: string, h: { open?: (name: string, attrs: Record<string, string>) => void; close?: (name: string) => void; text?: (t: string) => void }): void {
   const p = new SaxesParser({ xmlns: false });
+  let depth = 0;
+  let elements = 0;
   p.on("error", () => bad());
   p.on("doctype", () => bad());
-  p.on("opentag", (t) => h.open?.(local(t.name), t.attributes as Record<string, string>));
-  p.on("closetag", (t) => h.close?.(local(t.name)));
+  p.on("opentag", (t) => {
+    if (++depth > MAX_DEPTH || ++elements > MAX_ELEMENTS) bad("Berkas Excel terlalu rumit");
+    h.open?.(local(t.name), t.attributes as Record<string, string>);
+  });
+  p.on("closetag", (t) => {
+    depth--;
+    h.close?.(local(t.name));
+  });
   p.on("text", (t) => h.text?.(t));
   try {
     p.write(xml).close();
@@ -239,11 +249,16 @@ function firstSheetPath(files: Map<string, Buffer>): string {
   const relXml = files.get("xl/_rels/workbook.xml.rels")?.toString("utf8");
   if (!wbXml || !relXml) return bad();
   let rid: string | null = null;
+  let first: string | null = null;
   sax(wbXml, {
     open(n, a) {
-      if (n === "sheet" && rid === null) rid = a["r:id"] ?? a.id ?? null;
+      if (n !== "sheet") return;
+      const id = a["r:id"] ?? a.id ?? null;
+      if (first === null) first = id;
+      if (rid === null && a.name === "Peserta") rid = id; // the template's own sheet wins; otherwise the first one
     },
   });
+  rid = rid ?? first;
   let target: string | null = null;
   sax(relXml, {
     open(n, a) {
@@ -269,12 +284,14 @@ function readSheet(files: Map<string, Buffer>): Map<number, Map<number, Raw>> {
     let val: Raw | null = null;
     const raw = c.t === "inlineStr" ? c.is : c.v;
     if (c.t === "s") {
+      if (raw.trim() === "") return; // empty reference = empty cell
       const i = Number(raw);
       if (!Number.isInteger(i) || i < 0 || i >= strings.length) bad();
       val = strings[i];
     } else if (c.t === "b") val = raw.trim() === "1";
     else if (c.t === "e") val = null;
-    else if (c.t === "str" || c.t === "inlineStr" || c.t === "d") val = raw;
+    else if (c.t === "d") val = /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : raw;
+    else if (c.t === "str" || c.t === "inlineStr") val = raw;
     else if (raw.trim() !== "") {
       const n = Number(raw);
       val = Number.isFinite(n) ? n : raw;
@@ -292,7 +309,7 @@ function readSheet(files: Map<string, Buffer>): Map<number, Map<number, Raw>> {
         if (!m) bad("Berkas Excel tidak valid: ada sel tanpa alamat yang sah");
         const col = colNum(m![1]);
         const row = Number(m![2]);
-        if (col > MAX_SHEET_COLS || row > MAX_SHEET_ROWS) bad(`Data di luar batas lembar (maksimal ${MAX_ROWS} baris dan ${MAX_SHEET_COLS} kolom)`);
+        if (col > MAX_SHEET_COLS || row > MAX_SHEET_ROWS) bad(`Data di luar batas lembar: maksimal ${MAX_ROWS} baris data dan ${MAX_SHEET_COLS} kolom`);
         if (++count > MAX_CELLS) bad("Berkas Excel terlalu rumit (terlalu banyak sel)");
         cell = { row, col, t: a.t ?? "n", v: "", is: "" };
       } else if (cell && n === "v") cap = "v";
