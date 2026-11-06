@@ -400,8 +400,8 @@ export type PublicStats = {
   paroki: number;
   angkatan: number;
   lulusan: number;
-  /** angkatan = latest angkatan number of that parish; values below 3 are shown as "<3" (small cell). */
-  daftarParoki: { nama: string; angkatan: number | "<3" }[];
+  /** angkatan = latest angkatan number of that parish (an ordinal label, shown as is). No per-parish participant counts are exposed. */
+  daftarParoki: { nama: string; angkatan: number }[];
 };
 let pub: { at: number; value?: PublicStats; p?: Promise<PublicStats>; failedAt?: number; err?: unknown } | null = null;
 
@@ -428,7 +428,7 @@ async function computePublicStats(): Promise<PublicStats> {
   }
   const daftarParoki = [...byParoki.values()]
     .sort((a, b) => a.nama.localeCompare(b.nama))
-    .map((v) => ({ nama: v.nama, angkatan: v.angkatan < 3 ? ("<3" as const) : v.angkatan }));
+    .map((v) => ({ nama: v.nama, angkatan: v.angkatan }));
   return { paroki: daftarParoki.length, angkatan: open.length, lulusan, daftarParoki };
 }
 
