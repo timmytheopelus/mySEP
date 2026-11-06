@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { crc32, deflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
 /** Fixture generator (run at test time, nothing binary is committed). */
 export const HEADERS = [
@@ -102,4 +102,30 @@ export async function farRowXlsx(): Promise<Buffer> {
   ws.addRow(HEADERS);
   ws.getCell(1048576, 1).value = " ";
   return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+/** Unpacks a (sane) zip with the central directory, for building patched fixtures. */
+export function unzip(buf: Buffer): { name: string; data: Buffer }[] {
+  let e = buf.length - 22;
+  while (buf.readUInt32LE(e) !== 0x06054b50) e--;
+  let p = buf.readUInt32LE(e + 16);
+  const n = buf.readUInt16LE(e + 10);
+  const out: { name: string; data: Buffer }[] = [];
+  for (let i = 0; i < n; i++) {
+    const m = buf.readUInt16LE(p + 10), cs = buf.readUInt32LE(p + 20), nl = buf.readUInt16LE(p + 28), xl = buf.readUInt16LE(p + 30), cl = buf.readUInt16LE(p + 32), lo = buf.readUInt32LE(p + 42);
+    const name = buf.subarray(p + 46, p + 46 + nl).toString();
+    const ds = lo + 30 + buf.readUInt16LE(lo + 26) + buf.readUInt16LE(lo + 28);
+    const raw = buf.subarray(ds, ds + cs);
+    out.push({ name, data: m === 0 ? Buffer.from(raw) : inflateRawSync(raw) });
+    p += 46 + nl + xl + cl;
+  }
+  return out;
+}
+/** A template-based workbook with the first sheet's XML rewritten by `fn`. */
+export async function patchedSheet(fn: (xml: string) => string, sheet = "xl/worksheets/sheet1.xml"): Promise<Buffer> {
+  const { buildTemplateXlsx } = await import("@/lib/kep/import");
+  const parts = unzip(await buildTemplateXlsx({ parokiNames: ["Pandu"] }));
+  const t = parts.find((x) => x.name === sheet)!;
+  t.data = Buffer.from(fn(t.data.toString("utf8")));
+  return zip(parts);
 }

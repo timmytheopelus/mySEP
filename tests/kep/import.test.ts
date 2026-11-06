@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import ExcelJS from "exceljs";
 import { EVENT_ID_FIELD, F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
-import { HEADERS, emptyXlsx, farRowXlsx, goodRow, lyingZip, macroXlsm, understatedBomb, understatedPadded, validXlsx, vbaInPlainXlsx, xlsx, zip, zipBomb } from "./fixtures/build";
+import { HEADERS, emptyXlsx, farRowXlsx, goodRow, lyingZip, macroXlsm, patchedSheet, understatedBomb, understatedPadded, validXlsx, vbaInPlainXlsx, xlsx, zip, zipBomb } from "./fixtures/build";
 
 vi.mock("@/lib/airtable/client", () => fakeClientModule());
 vi.mock("@/lib/kep/readModel", async (orig) => ({ ...(await orig<object>()), invalidateKepCache: vi.fn() }));
@@ -134,6 +134,36 @@ describe("template neutralization", () => {
   });
 });
 
+describe("range-expansion attacks (rejected before exceljs expands anything)", () => {
+  const strip = (x: string) => x.replace(/<dataValidations[\s\S]*?<\/dataValidations>/, "");
+  const cases: [string, (x: string) => string, string?][] = [
+    ["merge A1:XFD1048576", (x) => strip(x).replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>')],
+    ["merge C3:Z400000", (x) => strip(x).replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="C3:Z400000"/></mergeCells>')],
+    ["dataValidation C3:Z400000", (x) => strip(x).replace("</sheetData>", '</sheetData><dataValidations count="1"><dataValidation type="list" allowBlank="1" sqref="C3:Z400000"><formula1>"a,b"</formula1></dataValidation></dataValidations>')],
+    ["cols max 20000000", (x) => x.replace(/<cols>[\s\S]*?<\/cols>/, '<cols><col min="1" max="20000000" width="9"/></cols>')],
+    ["conditionalFormatting", (x) => x.replace("</sheetData>", '</sheetData><conditionalFormatting sqref="A1:A2"><cfRule type="expression" priority="1"><formula>1</formula></cfRule></conditionalFormatting>')],
+    ["dimension beyond", (x) => x.replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:XFD1048576"/>')],
+  ];
+  for (const [name, fn] of cases)
+    it(`rejects ${name} quickly`, async () => {
+      const f = await patchedSheet(fn);
+      expect(f.length).toBeLessThan(20000);
+      const t = Date.now();
+      await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
+      expect(Date.now() - t).toBeLessThan(3000);
+    }, 30000);
+  it("rejects the same attack in a second sheet", async () => {
+    const f = await patchedSheet((x) => x.replace("</sheetData>", '</sheetData><mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>'), "xl/worksheets/sheet2.xml");
+    await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
+  });
+  it("the template itself (3 sheets, its own validations) still round-trips through the checker", async () => {
+    const f = await patchedSheet((x) => x);
+    const r = await parse(f);
+    expect(r.rows).toEqual([]);
+    expect(r.errors[0].message).toMatch(/contoh/i);
+  });
+});
+
 describe("parseImport", () => {
   it("parses a valid file", async () => {
     const r = await parse(await validXlsx(3));
@@ -190,6 +220,11 @@ describe("parseImport", () => {
     expect(r.errors).toEqual([]);
     expect(r.rows[0].pendukungDoa[0].kontak).toBe("081200000001");
     expect(r.rows[0].kontakDarurat).toBe("0811111111111");
+  });
+  it("the example is also rejected when only its name or email is left unchanged", async () => {
+    const r = await parse(await xlsx([goodRow(1, { "Nama Lengkap": "CONTOH Maria Goreti (hapus baris ini)" }), goodRow(2, { Email: "contoh@example.com" })]));
+    expect(r.rows).toEqual([]);
+    expect(r.errors.map((e) => e.row)).toEqual([2, 3]);
   });
   it("only a row identical to the example is rejected; a real person whose name starts with Contoh is fine", async () => {
     const r = await parse(await xlsx([goodRow(1, { "Nama Lengkap": "Contohwati Santoso" })]));
@@ -391,11 +426,11 @@ describe("commit route", () => {
   it("409 while another import of the same file is recorded as started and recent without a finish", async () => {
     const file = await validXlsx(2);
     const opId = createHash("sha256").update(`${KEP}:${sha(file)}`).digest("hex");
-    (store[T.auditKep] ??= []).push({ id: "recAUD000000001x", fields: { [F.auditKep.aksi]: "import_peserta_mulai", [F.auditKep.targetId]: KEP, [F.auditKep.sesudah]: JSON.stringify({ opId, t: Date.now() - 60_000 }) } });
+    (store[T.auditKep] ??= []).push({ id: "recAUD000000001x", fields: { [F.auditKep.aksi]: "import_peserta_mulai", [F.auditKep.targetId]: KEP, [F.auditKep.sesudah]: JSON.stringify({ opId, t: Date.now() - 30_000 }) } });
     expect((await post(commitRoute, file, { as: PIC_A })).status).toBe(409);
     expect(pendaftaran()).toHaveLength(0);
     // an old orphan start (crashed run) no longer blocks
-    store[T.auditKep][0].fields[F.auditKep.sesudah] = JSON.stringify({ opId, t: Date.now() - 3 * 3600_000 });
+    store[T.auditKep][0].fields[F.auditKep.sesudah] = JSON.stringify({ opId, t: Date.now() - 7 * 60_000 });
     expect((await post(commitRoute, file, { as: PIC_A })).status).toBe(200);
     expect(pendaftaran()).toHaveLength(2);
   });
