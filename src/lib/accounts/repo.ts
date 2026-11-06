@@ -199,17 +199,48 @@ export async function saveTotpStep(id: string, step: number): Promise<void> {
   await patchAccount(id, { [A.langkahTotpTerakhir]: step });
 }
 
-/** Append-only audit row. Throws on failure so callers can refuse to act unaudited. */
-export async function writeAudit(row: { aksi: string; pelaku: string; targetId: string; sebelum?: string; sesudah?: string; opId?: string }): Promise<void> {
+export const AUDIT_EMAIL = /^[^\s@"<>,;]+@[^\s@"<>,;]+\.[^\s@"<>,;]+$/;
+export type AuditRow = { aksi: string; pelaku?: string; targetId: string; sebelum?: string; sesudah?: string; opId?: string; actorType?: string };
+
+/**
+ * AuditKEP.Pelaku is an Airtable EMAIL field: it only ever receives a valid email address, or nothing. A
+ * non-email actor (public registration: "publik") is never written there; the marker travels in
+ * Sesudah.actorType instead (JSON object kept a JSON object; anything else is wrapped).
+ */
+export function auditRecordFields(row: AuditRow): Record<string, unknown> {
   const AU = F.auditKep;
-  await createRecords(T.auditKep, [
-    {
-      [AU.aksi]: row.aksi,
-      [AU.pelaku]: row.pelaku,
-      [AU.targetId]: row.targetId,
-      ...(row.sebelum !== undefined ? { [AU.sebelum]: row.sebelum } : {}),
-      ...(row.sesudah !== undefined ? { [AU.sesudah]: row.sesudah } : {}),
-      [AU.opId]: row.opId ?? randomUUID(),
-    },
-  ]);
+  const raw = (row.pelaku ?? "").trim();
+  const email = AUDIT_EMAIL.test(raw) ? raw : "";
+  const actorType = email ? row.actorType : (row.actorType ?? (raw ? raw.toLowerCase().replace(/[^a-z_]/g, "").slice(0, 20) || "tidak_dikenal" : undefined));
+  let sesudah = row.sesudah;
+  if (actorType && !email) {
+    let obj: unknown;
+    try {
+      obj = sesudah === undefined ? {} : JSON.parse(sesudah);
+    } catch {
+      obj = undefined;
+    }
+    sesudah =
+      obj && typeof obj === "object" && !Array.isArray(obj)
+        ? JSON.stringify({ ...(obj as object), actorType })
+        : JSON.stringify({ actorType, nilai: sesudah });
+  }
+  return {
+    [AU.aksi]: row.aksi,
+    ...(email ? { [AU.pelaku]: email } : {}),
+    [AU.targetId]: row.targetId,
+    ...(row.sebelum !== undefined ? { [AU.sebelum]: row.sebelum } : {}),
+    ...(sesudah !== undefined ? { [AU.sesudah]: sesudah } : {}),
+    [AU.opId]: row.opId ?? randomUUID(),
+  };
+}
+
+/** Append-only audit row. Throws on failure so callers can refuse to act unaudited. */
+export async function writeAudit(row: AuditRow): Promise<void> {
+  await createRecords(T.auditKep, [auditRecordFields(row)]);
+}
+
+/** Several audit rows, 10 per Airtable request. Throws on failure (rows of earlier batches stay written). */
+export async function writeAuditBatch(rows: AuditRow[]): Promise<void> {
+  if (rows.length) await createRecords(T.auditKep, rows.map(auditRecordFields));
 }

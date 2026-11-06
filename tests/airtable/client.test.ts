@@ -14,6 +14,8 @@ beforeEach(() => {
   vi.stubEnv("AIRTABLE_API_URL", "http://mock.local/v0");
   vi.stubEnv("AIRTABLE_BASE_ID", "appTEST");
   vi.stubEnv("AIRTABLE_BACKOFF_MS", "1");
+  vi.stubEnv("AIRTABLE_429_PAUSE_MS", "1");
+  client.resetAirtableThrottle();
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -113,6 +115,86 @@ describe("retry", () => {
     fetchMock.mockResolvedValue(json({ error: "bad" }, 422));
     await expect(client.getRecord(T.events, "recX")).rejects.toThrow(/422/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("throttle and transient errors (final fix C1/I1)", () => {
+  const ok = () => json({ id: "recX", fields: {} });
+  it("never exceeds AIRTABLE_MAX_RPS (default 4, clamped to 5) across concurrent callers", async () => {
+    vi.stubEnv("AIRTABLE_MAX_RPS", "50"); // clamped to 5
+    expect(client.maxRps()).toBe(5);
+    const times: number[] = [];
+    fetchMock.mockImplementation(async () => {
+      times.push(Date.now());
+      return ok();
+    });
+    const t0 = Date.now();
+    await Promise.all(Array.from({ length: 10 }, () => client.getRecord(T.events, "recX")));
+    // burst of 5, then 5 more at 5/s: the 10th starts no earlier than ~1 s after the first
+    expect(times.at(-1)! - t0).toBeGreaterThanOrEqual(900);
+    for (let i = 5; i < times.length; i++) expect(times[i] - times[i - 5]).toBeGreaterThanOrEqual(900);
+    vi.unstubAllEnvs();
+    expect(client.maxRps()).toBe(4);
+  });
+  it("a full queue fails fast with a transient 503 (no unbounded pile-up)", async () => {
+    vi.stubEnv("AIRTABLE_MAX_RPS", "1");
+    vi.stubEnv("AIRTABLE_QUEUE_MAX", "3");
+    fetchMock.mockImplementation(async () => ok());
+    const rs = await Promise.allSettled(Array.from({ length: 8 }, () => client.getRecord(T.events, "recX")));
+    const rejected = rs.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+    expect(rejected.length).toBeGreaterThan(0);
+    for (const r of rejected) {
+      expect(client.isTransientAirtableError(r.reason)).toBe(true);
+      expect((r.reason as client.AirtableError).status).toBe(503);
+      expect((r.reason as client.AirtableError).retryAfterS).toBeGreaterThanOrEqual(1);
+    }
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(1 + 3);
+  });
+  it("honours Retry-After on 429: the whole process pauses, then retries", async () => {
+    let n = 0;
+    fetchMock.mockImplementation(async () => (++n === 1 ? new Response("{}", { status: 429, headers: { "retry-after": "1" } }) : ok()));
+    const t0 = Date.now();
+    const [a, b] = await Promise.all([client.getRecord(T.events, "recX"), (async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return client.getRecord(T.events, "recY");
+    })()]);
+    expect(a.id).toBe("recX");
+    expect(b.id).toBe("recX");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(950); // the second caller waited for the pause too
+  });
+  it("a 429 pause longer than the wait budget fails as transient with Retry-After (no 30 s hang beyond budget)", async () => {
+    vi.stubEnv("AIRTABLE_MAX_WAIT_MS", "200");
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 429, headers: { "retry-after": "30" } }));
+    const err = (await client.getRecord(T.events, "recX").catch((e) => e)) as client.AirtableError;
+    expect(client.isTransientAirtableError(err)).toBe(true);
+    expect(err.retryAfterS).toBeGreaterThanOrEqual(29);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // the pause holds for every later request too, without calling Airtable
+    const err2 = (await client.listRecords(T.events, { fields: [] }).catch((e) => e)) as client.AirtableError;
+    expect(client.isTransientAirtableError(err2)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("5xx and network errors are transient, never 'not found'; a read is retried once, a write never", async () => {
+    fetchMock.mockResolvedValue(json({ error: "x" }, 503));
+    const e1 = await client.getRecord(T.events, "recX").catch((e) => e);
+    expect(client.isTransientAirtableError(e1)).toBe(true);
+    expect(client.isAirtableNotFound(e1)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fetchMock.mockReset();
+    fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+    const e2 = await client.updateRecords(T.events, [{ id: "recX", fields: { [F.events.namaAcara]: "a" } }]).catch((e) => e);
+    expect(client.isTransientAirtableError(e2)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(json({ error: "x" }, 502));
+    await client.createRecords(T.events, [{ [F.events.namaAcara]: "a" }]).catch(() => undefined);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("a genuine 404 is not transient and is recognised as not-found", async () => {
+    fetchMock.mockResolvedValue(json({ error: "NOT_FOUND" }, 404));
+    const e = await client.getRecord(T.events, "recX").catch((x) => x);
+    expect(client.isTransientAirtableError(e)).toBe(false);
+    expect(client.isAirtableNotFound(e)).toBe(true);
   });
 });
 

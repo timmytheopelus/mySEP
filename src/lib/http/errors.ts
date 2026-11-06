@@ -2,6 +2,8 @@ export class HttpError extends Error {
   constructor(
     public readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 422 | 429 | 503,
     message?: string,
+    /** Seconds; sent as Retry-After (429/503). */
+    public readonly retryAfter?: number,
   ) {
     super(message ?? DEFAULT[status]);
     this.name = "HttpError";

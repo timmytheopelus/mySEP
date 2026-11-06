@@ -1,62 +1,24 @@
 import "server-only";
-import { listRecords, type AtRecord } from "@/lib/airtable/client";
+import { type AtRecord } from "@/lib/airtable/client";
+import { cachedList, invalidateTable, onInvalidate } from "@/lib/airtable/cache";
+import { limitKey, rateLimit, sharedGetJson, sharedSetJson } from "@/lib/ratelimit";
 import { EVENT_ID_FIELD, F, T } from "@/lib/airtable/schema";
 import { assertKepInScope, parokiAllows, scopeFilter } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 
-// ---------------------------------------------------------------------------------------------
-// Short-lived per-process table cache. Concurrent callers share one in-flight read (single flight);
-// a failed refresh serves the last good rows and backs off for a few seconds (cold failure: rethrows,
-// also backed off); invalidateKepCache bumps a generation so an older in-flight read can neither be
-// served as fresh nor stored over the invalidation. Returned arrays are shared: treat as read-only.
-// ---------------------------------------------------------------------------------------------
-const TABLE_TTL_MS = 45_000;
+// Table reads go through the shared per-process cache (src/lib/airtable/cache.ts).
 const PUBLIC_TTL_MS = 10 * 60_000;
 const FAIL_BACKOFF_MS = 10_000;
-
-let generation = 0; // any invalidation (public stats)
-const tableGen = new Map<string, number>();
-const genOf = (t: string) => tableGen.get(t) ?? 0;
-type Entry = { at: number; gen: number; p: Promise<AtRecord[]>; failedAt?: number };
-const tableCache = new Map<string, Entry>();
-const lastGood = new Map<string, AtRecord[]>();
-
-function cached(table: string, fields: string[], filterByFormula?: string): Promise<AtRecord[]> {
-  const fl = [...new Set(fields)];
-  const key = `${table}|${fl.sort().join(",")}|${filterByFormula ?? ""}`;
-  const hit = tableCache.get(key);
-  const now = Date.now();
-  if (hit && hit.gen === genOf(table)) {
-    if (hit.failedAt === undefined && now - hit.at < TABLE_TTL_MS) return hit.p;
-    if (hit.failedAt !== undefined && now - hit.failedAt < FAIL_BACKOFF_MS) return hit.p;
-  }
-  const gen = genOf(table);
-  const entry: Entry = { at: now, gen, p: Promise.resolve([]) };
-  entry.p = listRecords(table, { fields: fl, ...(filterByFormula ? { filterByFormula } : {}) }).then(
-    (rows) => {
-      if (gen === genOf(table)) lastGood.set(key, rows);
-      return rows;
-    },
-    (err) => {
-      entry.failedAt = Date.now();
-      const stale = lastGood.get(key);
-      if (stale) return stale;
-      throw err; // rejected promise stays cached during the backoff window
-    },
-  );
-  entry.p.catch(() => undefined);
-  tableCache.set(key, entry);
-  return entry.p;
-}
+const cached = cachedList;
+let generation = 0; // any invalidation (report caches, public stats)
+onInvalidate(() => {
+  generation++;
+  if (pub) pub.at = 0; // value kept as stale fallback; next call recomputes
+});
 
 /** Call after any write to `table` (or without argument to drop everything). */
 export function invalidateKepCache(table?: string): void {
-  generation++;
-  if (table) tableGen.set(table, genOf(table) + 1);
-  else for (const t of Object.values(T)) tableGen.set(t, genOf(t) + 1);
-  for (const k of [...tableCache.keys()]) if (!table || k.startsWith(`${table}|`)) tableCache.delete(k);
-  for (const k of [...lastGood.keys()]) if (!table || k.startsWith(`${table}|`)) lastGood.delete(k);
-  if (pub) pub.at = 0; // value kept as stale fallback; next call recomputes
+  invalidateTable(table);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -494,7 +456,7 @@ export type PublicStats = {
   /** angkatan = latest angkatan number of that parish (an ordinal label, shown as is). No per-parish participant counts are exposed. */
   daftarParoki: { nama: string; angkatan: number }[];
 };
-let pub: { at: number; value?: PublicStats; p?: Promise<PublicStats>; failedAt?: number; err?: unknown } | null = null;
+let pub: { at: number; value?: PublicStats; okAt?: number; p?: Promise<PublicStats>; failedAt?: number; err?: unknown } | null = null;
 
 async function computePublicStats(): Promise<PublicStats> {
   const { pendByEvent, courses, ident } = await load();
@@ -523,32 +485,81 @@ async function computePublicStats(): Promise<PublicStats> {
   return { paroki: daftarParoki.length, angkatan: open.length, lulusan, daftarParoki };
 }
 
+const PUBLIC_STALE_MAX_MS = 24 * 3600_000;
+const SHARED_KEY = "kep:public-stats:v1";
+type Shared = { at: number; value: PublicStats };
+
 /**
- * Landing-page numbers. Only counts and parish names (no person data). Cached 10 minutes in-process, one
- * shared in-flight compute, last good value on failure, short failure backoff; an invalidation during a
- * compute makes that result stale-only (never "fresh").
+ * Landing-page numbers. Only counts and parish names (no person data). Fresh for 10 minutes in-process, one
+ * shared in-flight compute, last good value (at most 24 h old) on failure, short failure backoff; an invalidation
+ * during a compute makes that result stale-only (never "fresh"). Blocking: for internal callers and tests; the
+ * public page uses publicStatsForPage (never blocks on Airtable).
  */
 export async function publicStats(): Promise<PublicStats> {
   const now = Date.now();
   if (pub?.value && now - pub.at < PUBLIC_TTL_MS) return pub.value;
   if (pub?.p) return pub.p;
+  const usable = (v?: { at: number; value?: PublicStats; okAt?: number }) => (v?.value && now - (v.okAt ?? 0) < PUBLIC_STALE_MAX_MS ? v.value : undefined);
   if (pub?.failedAt !== undefined && now - pub.failedAt < FAIL_BACKOFF_MS) {
-    if (pub.value) return pub.value;
+    const v = usable(pub);
+    if (v) return v;
     throw pub.err;
   }
   const gen = generation;
-  const stale = pub?.value;
+  const prev = pub;
   const p = computePublicStats().then(
     (value) => {
-      pub = { at: gen === generation ? Date.now() : 0, value };
+      const t = Date.now();
+      pub = { at: gen === generation ? t : 0, value, okAt: t };
+      void sharedSetJson(SHARED_KEY, { at: t, value } satisfies Shared, PUBLIC_STALE_MAX_MS / 1000);
       return value;
     },
     (err) => {
-      pub = { at: 0, value: stale, failedAt: Date.now(), err };
+      const stale = usable(prev ?? undefined);
+      pub = { at: 0, value: stale, okAt: stale ? prev?.okAt : undefined, failedAt: Date.now(), err };
       if (stale) return stale;
       throw err;
     },
   );
-  pub = { at: 0, value: stale, p };
+  pub = { at: 0, value: prev?.value, okAt: prev?.okAt, p };
   return p;
+}
+
+/** Refresh triggers per client IP (cold instances fanned out by one client cannot drain the Airtable budget). */
+export const PUBLIC_REFRESH_LIMIT = 5;
+export const PUBLIC_REFRESH_WINDOW_S = 600;
+
+/**
+ * For the public landing page (unauthenticated): NEVER waits for Airtable. Order: in-process value (fresh 10 min)
+ * -> shared Upstash value (any instance's last compute, up to 24 h) -> null (the page shows its static fallback).
+ * When the value is missing or older than 10 minutes a refresh starts in the background (single flight per
+ * instance, failure backoff), but only if this IP is within PUBLIC_REFRESH_LIMIT per 10 minutes.
+ */
+export async function publicStatsForPage(ip: string, opts: { background?: (fn: () => Promise<unknown>) => void } = {}): Promise<PublicStats | null> {
+  const now = Date.now();
+  if (pub?.value && now - pub.at < PUBLIC_TTL_MS) return pub.value;
+  let value = pub?.value && now - (pub.okAt ?? 0) < PUBLIC_STALE_MAX_MS ? pub.value : null;
+  let freshEnough = false;
+  if (!value || !pub?.okAt || now - pub.okAt >= PUBLIC_TTL_MS) {
+    const shared = await sharedGetJson<Shared>(SHARED_KEY);
+    if (shared?.value && typeof shared.at === "number" && now - shared.at < PUBLIC_STALE_MAX_MS && (!pub?.okAt || shared.at > pub.okAt)) {
+      value = shared.value;
+      freshEnough = now - shared.at < PUBLIC_TTL_MS;
+      if (!pub?.p) pub = { at: freshEnough ? shared.at : 0, value: shared.value, okAt: shared.at, failedAt: pub?.failedAt, err: pub?.err };
+    }
+  }
+  if (!freshEnough && !pub?.p && !(pub?.failedAt !== undefined && now - pub.failedAt < FAIL_BACKOFF_MS)) {
+    const lim = await rateLimit(limitKey("public-stats-refresh", ip), PUBLIC_REFRESH_LIMIT, PUBLIC_REFRESH_WINDOW_S);
+    if (lim.ok) {
+      const run = () => publicStats().catch(() => undefined);
+      if (opts.background) opts.background(run);
+      else void run();
+    }
+  }
+  return value;
+}
+
+/** Tests: forget the in-process public stats (simulates a cold instance). */
+export function resetPublicStatsMemory(): void {
+  pub = null;
 }

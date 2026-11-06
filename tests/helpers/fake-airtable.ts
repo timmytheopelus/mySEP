@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import { F, T } from "@/lib/airtable/schema";
 import { hashPassword } from "@/lib/auth/password";
 import { encryptSecret } from "@/lib/auth/totp";
+import { resetReadCache } from "@/lib/airtable/cacheStore";
 
 type Row = { id: string; fields: Record<string, unknown> };
 export const store: Record<string, Row[]> = {};
@@ -61,4 +62,5 @@ export async function seedAccount(opts: {
 
 export function resetStore() {
   for (const k of Object.keys(store)) delete store[k];
+  resetReadCache(); // the shared read cache must never serve rows of an earlier test
 }

@@ -1,3 +1,4 @@
+import { resetReadCache } from "@/lib/airtable/cacheStore";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import ExcelJS from "exceljs";
@@ -10,7 +11,7 @@ vi.mock("@/lib/kep/readModel", async (orig) => ({ ...(await orig<object>()), inv
 
 import * as client from "@/lib/airtable/client";
 import { neutralize } from "@/lib/security/csv";
-import { ImportFileError, buildTemplateXlsx, parseImport } from "@/lib/kep/import";
+import { ImportFileError, MAX_ROWS, buildTemplateXlsx, parseImport } from "@/lib/kep/import";
 import { GET as templateRoute } from "@/app/api/kep/[id]/import/template/route";
 import { POST as previewRoute } from "@/app/api/kep/[id]/import/preview/route";
 import { POST as commitRoute } from "@/app/api/kep/[id]/import/commit/route";
@@ -183,7 +184,7 @@ describe("range-expansion attacks (uploads are never loaded by exceljs: these pa
     await expect(parse(f)).rejects.toBeInstanceOf(ImportFileError);
     expect(Date.now() - t).toBeLessThan(3000);
   }, 30000);
-  it("cells beyond row 600 or column 60 are rejected", async () => {
+  it("cells beyond row 200 or column 60 are rejected", async () => {
     await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="1048576"><c r="A1048576"><v>1</v></c></row></sheetData>')))).rejects.toBeInstanceOf(ImportFileError);
     await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="5"><c r="XFD5"><v>1</v></c></row></sheetData>')))).rejects.toBeInstanceOf(ImportFileError);
   });
@@ -228,8 +229,8 @@ describe("range-expansion attacks (uploads are never loaded by exceljs: these pa
     const wbp = parts.find((x) => x.name === "xl/workbook.xml")!;
     expect(wbp.data.toString()).toContain('name="Peserta"');
   });
-  it("limit message talks about 500 data rows and 60 columns", async () => {
-    await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="5"><c r="XFD5"><v>1</v></c></row></sheetData>')))).rejects.toThrow(/500 baris data.*60 kolom/);
+  it("limit message talks about 100 data rows and 60 columns", async () => {
+    await expect(parse(await patchedSheet((x) => x.replace("</sheetData>", '<row r="5"><c r="XFD5"><v>1</v></c></row></sheetData>')))).rejects.toThrow(/100 baris data.*60 kolom/);
   });
   it("the template itself still round-trips", async () => {
     const r = await parse(await patchedSheet((x) => x));
@@ -334,11 +335,12 @@ describe("parseImport", () => {
     await expect(parse(understatedPadded())).rejects.toBeInstanceOf(ImportFileError);
     expect(Date.now() - t).toBeLessThan(3000);
   });
-  it("rejects more than 500 data rows, accepts exactly 500", async () => {
+  it("rejects more than 100 data rows, accepts exactly 100 (final fix C1e)", async () => {
+    expect(MAX_ROWS).toBe(100);
     const mk = (n: number) => xlsx(Array.from({ length: n }, (_, i) => goodRow(i + 1)));
-    await expect(parse(await mk(501))).rejects.toThrow(/500/);
-    const ok = await parse(await mk(500));
-    expect(ok.rows).toHaveLength(500);
+    await expect(parse(await mk(101))).rejects.toThrow(/100/);
+    const ok = await parse(await mk(100));
+    expect(ok.rows).toHaveLength(100);
   }, 60000);
 });
 
@@ -377,6 +379,7 @@ describe("preview route", () => {
     expect((await post(previewRoute, f, { as: ADM_A })).status).toBe(403);
     expect((await post(previewRoute, f, { as: PIC_B })).status).toBe(404);
     store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Diajukan";
+    resetReadCache(); // direct Airtable edit: visible once the shared cache expires
     expect((await post(previewRoute, f, { as: PIC_A })).status).toBe(409);
   });
   it("same-origin guard: cross-site or missing signals are refused; JSON content type is not the contract", async () => {
@@ -413,6 +416,23 @@ describe("preview route", () => {
 });
 
 describe("commit route", () => {
+  it("C1e: a time budget stops starting rows; the rest answer 'ulangi' and a re-run of the same file finishes", async () => {
+    vi.stubEnv("IMPORT_BUDGET_MS", "1");
+    const file = await validXlsx(3);
+    const slow = vi.mocked(client.createRecords).getMockImplementation()!;
+    vi.mocked(client.createRecords).mockImplementation(async (t, r, e) => {
+      await new Promise((x) => setTimeout(x, 5));
+      return slow(t, r, e);
+    });
+    const b = await (await post(commitRoute, file, { as: PIC_A })).json();
+    expect(b.registered).toBe(1);
+    expect(b.failed).toBe(2);
+    expect(b.failedRows.map((x: { message: string }) => x.message).join(" ")).toMatch(/batas waktu/);
+    vi.stubEnv("IMPORT_BUDGET_MS", "");
+    vi.mocked(client.createRecords).mockImplementation(slow);
+    const again = await (await post(commitRoute, file, { as: PIC_A })).json();
+    expect(again).toMatchObject({ registered: 2, alreadyRegistered: 1, failed: 0 });
+  });
   it("registers valid rows, reports row numbers for invalid ones, audits start/done with hash and counts only", async () => {
     const file = await xlsx([goodRow(1), goodRow(2, { Email: "x" }), goodRow(3)]);
     const res = await post(commitRoute, file, { as: PIC_A });
@@ -469,6 +489,7 @@ describe("commit route", () => {
     expect((await post(commitRoute, f, { as: ADM_A })).status).toBe(403);
     expect((await post(commitRoute, f, { as: PIC_B })).status).toBe(404);
     store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Diajukan";
+    resetReadCache(); // direct Airtable edit: visible once the shared cache expires
     expect((await post(commitRoute, f, { as: PIC_A })).status).toBe(409);
     expect(pendaftaran()).toHaveLength(0);
   });

@@ -16,7 +16,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     <main className={styles.main}>
       <h1>Impor peserta dari Excel</h1>
       <p className={styles.meta}>
-        Unduh template, isi data peserta (maksimal 500 baris, 2 MB, format .xlsx tanpa makro), lalu periksa hasilnya sebelum menyimpan. Pratinjau tidak menyimpan apa pun.
+        Unduh template, isi data peserta (maksimal 100 baris per berkas, 2 MB, format .xlsx tanpa makro), lalu periksa hasilnya sebelum menyimpan. Pratinjau tidak menyimpan apa pun.
       </p>
       <ImportClient kepId={id} />
     </main>

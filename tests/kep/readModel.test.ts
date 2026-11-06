@@ -7,7 +7,8 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 
 import { listRecords } from "@/lib/airtable/client";
 import { EVENT_ID_FIELD } from "@/lib/airtable/schema";
-import { invalidateKepCache, listKepEvents, listPesertaView, publicStats } from "@/lib/kep/readModel";
+import { PUBLIC_REFRESH_LIMIT, invalidateKepCache, listKepEvents, listPesertaView, publicStats, publicStatsForPage, resetPublicStatsMemory } from "@/lib/kep/readModel";
+import { resetRateLimitMemory, sharedSetJson } from "@/lib/ratelimit";
 import type { Session } from "@/lib/auth/session";
 
 type Row = { id: string; f: Record<string, unknown> };
@@ -39,6 +40,7 @@ const admLaur: Session = { accountId: "recADM00000000001", email: "a@x.id", role
 beforeEach(() => {
   load();
   invalidateKepCache();
+  resetPublicStatsMemory();
   vi.mocked(listRecords).mockClear();
 });
 
@@ -120,6 +122,78 @@ describe("publicStats", () => {
       vi.mocked(listRecords).mockRejectedValue(new Error("down"));
       vi.advanceTimersByTime(11 * 60_000);
       expect(await publicStats()).toEqual(first);
+    } finally {
+      vi.useRealTimers();
+      vi.mocked(listRecords).mockImplementation(fakeClientModule().listRecords);
+    }
+  });
+});
+
+describe("publicStatsForPage (final fix I2: never blocks unauthenticated traffic on Airtable)", () => {
+  beforeEach(() => {
+    resetPublicStatsMemory();
+    resetRateLimitMemory();
+  });
+  const bg = () => {
+    const jobs: (() => Promise<unknown>)[] = [];
+    return { jobs, background: (fn: () => Promise<unknown>) => void jobs.push(fn), run: () => Promise.all(jobs.splice(0).map((j) => j())) };
+  };
+  it("cold instance: returns null at once (static fallback), refreshes in the background, then serves from memory", async () => {
+    const b = bg();
+    expect(await publicStatsForPage("203.0.113.1", b)).toBeNull();
+    expect(vi.mocked(listRecords)).not.toHaveBeenCalled(); // nothing awaited on Airtable in the request
+    expect(b.jobs).toHaveLength(1);
+    await b.run();
+    const n = vi.mocked(listRecords).mock.calls.length;
+    expect(n).toBeGreaterThan(0);
+    const s = await publicStatsForPage("203.0.113.1", b);
+    expect(s?.paroki).toBe(2);
+    expect(b.jobs).toHaveLength(0);
+    expect(vi.mocked(listRecords).mock.calls.length).toBe(n);
+  });
+  it("a cold instance serves another instance's shared (Upstash) value without any Airtable read", async () => {
+    await sharedSetJson("kep:public-stats:v1", { at: Date.now(), value: { paroki: 9, angkatan: 9, lulusan: 9, daftarParoki: [] } }, 3600);
+    const b = bg();
+    expect((await publicStatsForPage("203.0.113.2", b))?.paroki).toBe(9);
+    expect(b.jobs).toHaveLength(0);
+    expect(vi.mocked(listRecords)).not.toHaveBeenCalled();
+  });
+  it("stale shared value (> 10 min, < 24 h) is served while one background refresh runs; > 24 h is never served", async () => {
+    await sharedSetJson("kep:public-stats:v1", { at: Date.now() - 2 * 3600_000, value: { paroki: 7, angkatan: 7, lulusan: 7, daftarParoki: [] } }, 3600);
+    const b = bg();
+    expect((await publicStatsForPage("203.0.113.3", b))?.paroki).toBe(7);
+    expect(b.jobs).toHaveLength(1);
+    resetPublicStatsMemory();
+    await sharedSetJson("kep:public-stats:v1", { at: Date.now() - 25 * 3600_000, value: { paroki: 7, angkatan: 7, lulusan: 7, daftarParoki: [] } }, 3600);
+    expect(await publicStatsForPage("203.0.113.3", bg())).toBeNull();
+  });
+  it("refreshes are rate limited per IP (a crawler cannot fan out cold instances into Airtable scans)", async () => {
+    let started = 0;
+    for (let i = 0; i < PUBLIC_REFRESH_LIMIT + 5; i++) {
+      resetPublicStatsMemory(); // every request lands on a new cold instance
+      const b = bg();
+      await publicStatsForPage("198.51.100.7", b);
+      started += b.jobs.length;
+    }
+    expect(started).toBe(PUBLIC_REFRESH_LIMIT);
+    const other = bg();
+    await publicStatsForPage("198.51.100.8", other);
+    expect(other.jobs).toHaveLength(1);
+  });
+  it("a failing refresh keeps serving the last good value (up to 24 h) and backs off", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = await publicStats();
+      vi.mocked(listRecords).mockRejectedValue(new Error("down"));
+      vi.advanceTimersByTime(11 * 60_000);
+      const b = bg();
+      expect(await publicStatsForPage("203.0.113.4", b)).toEqual(first);
+      await b.run();
+      expect(await publicStatsForPage("203.0.113.4", b)).toEqual(first);
+      expect(b.jobs).toHaveLength(0); // failure backoff: no immediate second refresh
+      vi.advanceTimersByTime(25 * 3600_000);
+      invalidateKepCache(); // also drops the table cache's last good rows
+      expect(await publicStats().catch(() => null)).toBeNull(); // > 24 h old: no longer served
     } finally {
       vi.useRealTimers();
       vi.mocked(listRecords).mockImplementation(fakeClientModule().listRecords);

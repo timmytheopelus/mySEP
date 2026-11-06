@@ -1,5 +1,8 @@
 import Link from "next/link";
-import { publicStats, type PublicStats } from "@/lib/kep/readModel";
+import { headers } from "next/headers";
+import { runInBackground } from "@/lib/background";
+import { clientIpFromHeaders } from "@/lib/http/auth-http";
+import { publicStatsForPage, type PublicStats } from "@/lib/kep/readModel";
 import {
   apaItuKep, bukuPegangan, buah, caraMengikuti, faq, hero, kesaksian, latarBelakang, materi, tujuan, untukSiapa,
 } from "../../../content/landing";
@@ -12,10 +15,15 @@ export const metadata = {
   description: "KEP adalah kursus di paroki untuk umat yang ingin mewartakan Injil, dimulai dari diri sendiri.",
 };
 
-/** Statistik hanya agregat dan sudah di-cache di lib/kep; jika gagal, halaman tetap tampil tanpa angka (tanpa membocorkan galat). */
+/**
+ * Statistik hanya agregat, dari cache (memori proses atau Upstash, maks. 24 jam); halaman TIDAK PERNAH menunggu
+ * Airtable. Belum ada angka (instance dingin): tampil tanpa angka, penyegaran berjalan di latar (dibatasi per IP).
+ * Jika gagal, halaman tetap tampil tanpa angka (tanpa membocorkan galat). ISR tidak dipakai: layout memakai nonce CSP
+ * per permintaan (force-dynamic).
+ */
 async function loadStats(): Promise<PublicStats | null> {
   try {
-    return await publicStats();
+    return await publicStatsForPage(clientIpFromHeaders(await headers()), { background: runInBackground });
   } catch {
     return null;
   }

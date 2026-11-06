@@ -7,6 +7,7 @@ import type { Session } from "@/lib/auth/session";
 import { logAudit } from "@/lib/audit/log";
 import { HttpError } from "@/lib/http/errors";
 import { invalidateKepCache } from "@/lib/kep/readModel";
+import { cachedList } from "@/lib/airtable/cache";
 import { canonicalWatchUrl, parseYoutubeId } from "./youtube";
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
@@ -71,10 +72,11 @@ export async function listPewarta(session: Session, q?: { bab?: string; nama?: s
   return filterPewarta(cards, q);
 }
 
-async function loadAktif(id: string, fields: string[]): Promise<AtRecord> {
+async function loadAktif(id: string, fields: string[], o: { cacheMs?: number } = {}): Promise<AtRecord> {
   if (typeof id !== "string" || !REC_ID.test(id)) throw new HttpError(404);
   // id is regex-validated above, so it is safe to embed in the formula; also matched in code.
-  const rows = await listRecords(T.pengajarKep, { fields, filterByFormula: `RECORD_ID() = "${id}"` });
+  const filterByFormula = `RECORD_ID() = "${id}"`;
+  const rows = o.cacheMs ? await cachedList(T.pengajarKep, fields, filterByFormula, { ttlMs: o.cacheMs }) : await listRecords(T.pengajarKep, { fields, filterByFormula });
   const r = rows.find((x) => x.id === id);
   if (!r || !isAktif(r.fields[F.pengajarKep.status])) throw new HttpError(404);
   return r;
@@ -154,7 +156,8 @@ const FOTO_HOST = /^([a-z0-9-]+\.)*airtableusercontent\.com$|^dl\.airtable\.com$
 /** Airtable thumbnail URL looked up server-side by record id (never from the client); host-restricted https. */
 export async function fotoSource(session: Session, id: string): Promise<string> {
   requireRole(session, ["SEP", "PIC", "ADMIN"]);
-  const r = await loadAktif(id, [F.pengajarKep.status, F.pengajarKep.photo]);
+  // Photo source cached 5 min per pewarta (the list page loads one per card; Airtable URLs live ~2 h).
+  const r = await loadAktif(id, [F.pengajarKep.status, F.pengajarKep.photo], { cacheMs: 5 * 60_000 });
   const att = (Array.isArray(r.fields[F.pengajarKep.photo]) ? (r.fields[F.pengajarKep.photo] as unknown[]) : [])[0] as
     | { url?: unknown; thumbnails?: { large?: { url?: unknown }; small?: { url?: unknown } } }
     | undefined;

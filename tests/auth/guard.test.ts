@@ -1,3 +1,4 @@
+import { resetReadCache } from "@/lib/airtable/cacheStore";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
@@ -19,6 +20,7 @@ import {
 import { SESSION_COOKIE, clearSessionCache, invalidateAccount, issueSession, type Session } from "@/lib/auth/session";
 import { pickAllowedForRole, pickAllowed } from "@/lib/airtable/schema";
 import { getRecord } from "@/lib/airtable/client";
+import { AirtableError } from "@/lib/airtable/errors";
 import { clearSessionCookie, sessionCookie } from "@/lib/auth/session";
 import { hashPassword } from "@/lib/auth/password";
 
@@ -41,7 +43,7 @@ async function seed() {
   store[T.eventKep] = [
     { id: "recKEPA0000000001", fields: { [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.events]: ["recEVTA0000000001"] } },
     { id: "recKEPB0000000001", fields: { [F.eventKep.penyelenggara]: ["recORGB0000000001"], [F.eventKep.events]: ["recEVTB0000000001"] } },
-  ];
+  ]; resetReadCache();
   store[T.pendaftaranEvents] = [
     { id: "recPSTA0000000001", fields: { [F.pendaftaranEvents.event]: ["recEVTA0000000001"] } },
     { id: "recPSTB0000000001", fields: { [F.pendaftaranEvents.event]: ["recEVTB0000000001"] } },
@@ -212,7 +214,7 @@ describe("fix round 1", () => {
     store[T.subEvent].push(sharedSub);
     store[T.pendaftaranEvents].push(sharedPst);
     for (const order of [base, [...base].reverse()]) {
-      store[T.eventKep] = structuredClone(order);
+      store[T.eventKep] = structuredClone(order); resetReadCache();
       for (const s of [picA, admB]) {
         expect((await status(assertSubEventInScope(s, sharedSub.id)))?.status).toBe(404);
         expect((await status(assertPesertaInScope(s, sharedPst.id)))?.status).toBe(404);
@@ -223,16 +225,16 @@ describe("fix round 1", () => {
     store[T.eventKep] = [
       { id: "recKEPA0000000001", fields: { [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.events]: ["recEVTA0000000001"] } },
       { id: "recKEPB0000000001", fields: { [F.eventKep.penyelenggara]: ["recORGB0000000001"], [F.eventKep.events]: ["recEVTA0000000001"] } },
-    ];
+    ]; resetReadCache();
     for (const order of [store[T.eventKep], [...store[T.eventKep]].reverse()]) {
-      store[T.eventKep] = order;
+      store[T.eventKep] = order; resetReadCache();
       expect((await status(assertSubEventInScope(picA, "recSUBA0000000001")))?.status).toBe(404);
     }
     // a KEP with no organizer among the linked ones also blocks
     store[T.eventKep] = [
       { id: "recKEPA0000000001", fields: { [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.events]: ["recEVTA0000000001"] } },
       { id: "recKEPC0000000001", fields: { [F.eventKep.events]: ["recEVTA0000000001"] } },
-    ];
+    ]; resetReadCache();
     expect((await status(assertSubEventInScope(picA, "recSUBA0000000001")))?.status).toBe(404);
   });
 
@@ -294,5 +296,23 @@ describe("per-role write allowlists", () => {
     const P = F.penyelenggaraKep.paroki;
     expect(pickAllowedForRole(T.penyelenggaraKep, "PIC", { [P]: [PA] })).toEqual({});
     expect(pickAllowedForRole(T.penyelenggaraKep, "SEP", { [P]: [PA] })).toEqual({ [P]: [PA] });
+  });
+});
+
+describe("I1: guard maps transient Airtable errors to 503, never 404", () => {
+  it("assertPesertaInScope / assertSubEventInScope: transient -> 503 with retryAfter; genuine 404 -> 404", async () => {
+    const sepS: Session = { accountId: "recSEPX000000001", email: "s@x.id", role: "SEP", parokiId: null };
+    for (const st of [429, 500, 503, 0]) {
+      vi.mocked(getRecord).mockImplementationOnce(async () => {
+        throw new AirtableError(`Airtable request failed: HTTP ${st}`, st, true, 7);
+      });
+      const e = await status(assertPesertaInScope(sepS, "recPEND0000000999"));
+      expect(e?.status).toBe(503);
+      expect(e?.retryAfter).toBe(7);
+    }
+    vi.mocked(getRecord).mockImplementationOnce(async () => {
+      throw new AirtableError("Airtable request failed: HTTP 404", 404, false);
+    });
+    expect((await status(assertSubEventInScope(sepS, "recSUB0000000999")))?.status).toBe(404);
   });
 });

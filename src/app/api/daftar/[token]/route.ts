@@ -1,6 +1,5 @@
 import { runInBackground } from "@/lib/background";
-import { guardPost, clientIp, json, readBody, serverError, tooMany } from "@/lib/http/auth-http";
-import { HttpError } from "@/lib/http/errors";
+import { errorResponse, guardPost, clientIp, json, readBody, tooMany } from "@/lib/http/auth-http";
 import { notAvailable, responseFloorMs, validationError } from "@/lib/http/registration-http";
 import { PesertaInput, RegistrationClosedError, RegistrationInputError, registerPeserta, verifyRegistrationTokenCurrent } from "@/lib/kep/registration";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
@@ -46,7 +45,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ token: string 
 
     // Row creation happens before the response; email and non-critical audit rows run after it. A floor on the
     // response time evens out the registered / already_registered paths (no timing oracle).
-    await registerPeserta(t.eventId, parsed.data, { actorEmail: "publik", defer: runInBackground });
+    await registerPeserta(t.eventId, parsed.data, { defer: runInBackground } /* no account: audit rows carry actorType "publik", Pelaku stays empty */);
     const floor = responseFloorMs(process.env.REG_MIN_RESPONSE_MS);
     const wait = floor - (Date.now() - started);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
@@ -55,7 +54,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ token: string 
   } catch (e) {
     if (e instanceof RegistrationClosedError) return notAvailable();
     if (e instanceof RegistrationInputError) return json({ error: e.message }, 422);
-    if (e instanceof HttpError) return json({ error: e.message }, e.status);
-    return serverError();
+    return errorResponse(e);
   }
 }

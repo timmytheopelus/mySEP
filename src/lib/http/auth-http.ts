@@ -1,4 +1,5 @@
 import "server-only";
+import { isTransientAirtableError } from "@/lib/airtable/errors";
 import { HttpError } from "@/lib/http/errors";
 
 /** Shared by every state-changing auth route (Task 7 reuses it). */
@@ -8,6 +9,25 @@ export function json(body: unknown, status = 200): Response {
 }
 
 export const serverError = () => json({ error: "Terjadi kesalahan. Coba lagi nanti." }, 500);
+
+/** Transient upstream (Airtable 429/5xx/network/local queue): 503 + Retry-After. Never 404, never 500. */
+export function unavailable(retryAfter = 5, message = "Layanan sedang sibuk. Coba lagi sebentar."): Response {
+  const res = json({ error: message }, 503);
+  res.headers.set("Retry-After", String(Math.max(1, Math.ceil(retryAfter))));
+  return res;
+}
+
+/** HttpError -> its status (Retry-After for 429/503); transient Airtable error -> 503; anything else -> 500. */
+export function errorResponse(e: unknown): Response {
+  if (e instanceof HttpError) {
+    const res = json({ error: e.message }, e.status);
+    if ((e.status === 503 || e.status === 429) && e.retryAfter !== undefined) res.headers.set("Retry-After", String(Math.max(1, Math.ceil(e.retryAfter))));
+    else if (e.status === 503) res.headers.set("Retry-After", "5");
+    return res;
+  }
+  if (isTransientAirtableError(e)) return unavailable(e.retryAfterS ?? 5);
+  return serverError();
+}
 
 export function tooMany(retryAfter: number): Response {
   const res = json({ error: "Terlalu banyak percobaan. Coba lagi nanti." }, 429);

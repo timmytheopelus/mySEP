@@ -1,12 +1,14 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { createRecords, getRecord, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
+import { createRecords, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
 import { EVENT_ID_FIELD, F, PENDAFTARAN_CREATED, T, TEAM_UMAT_CREATED, TEAM_UMAT_HAPUS, TEAM_UMAT_MENINGGAL, pickPublicRegistration } from "@/lib/airtable/schema";
 import { logAudit } from "@/lib/audit/log";
 import { mailConfigured, sendMail } from "@/lib/email";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { invalidateKepCache, normEmail, normPhone } from "@/lib/kep/readModel";
+import { cachedList } from "@/lib/airtable/cache";
+import { KEP_FIELDS } from "@/lib/auth/guard";
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -244,9 +246,19 @@ export type OpenKep = { eventId: string; eventKepId: string; nama: string };
 /** The KEP behind an Events record, only if EVERY linked EventKEP is Disetujui and today (WIB) is not after Tanggal Selesai. */
 export async function resolveOpenKep(eventId: string, now = new Date()): Promise<OpenKep> {
   if (typeof eventId !== "string" || !REC_ID.test(eventId)) throw new RegistrationClosedError();
-  const all = await listRecords(T.eventKep, {
-    fields: [F.eventKep.events, F.eventKep.statusPersetujuan, F.eventKep.tanggalSelesai],
+  // Shared cached EventKEP read (same field set as the scope guard). A closed answer is re-checked once against a
+  // refresh older than 5 s (just approved on another instance); an open answer may be up to 45 s old, which only
+  // matters for a KEP that closes by date (checked below with today's date) - approval is never withdrawn.
+  const keps = await openKeps(eventId, now, await cachedList(T.eventKep, KEP_FIELDS)).catch(async (e) => {
+    if (!(e instanceof RegistrationClosedError)) throw e;
+    return openKeps(eventId, now, await cachedList(T.eventKep, KEP_FIELDS, undefined, { maxAgeMs: 5_000 }));
   });
+  const ev = await eventInfo(eventId);
+  if (!ev) throw new RegistrationClosedError();
+  return { eventId, eventKepId: keps[0].id, nama: ev.nama || "KEP" };
+}
+
+async function openKeps(eventId: string, now: Date, all: AtRecord[]): Promise<AtRecord[]> {
   const keps = all.filter((k) => ids(k.fields[F.eventKep.events]).includes(eventId));
   if (keps.length === 0 || !keps.every((k) => str(k.fields[F.eventKep.statusPersetujuan]) === "Disetujui")) throw new RegistrationClosedError();
   // Open only through Tanggal Selesai, as a calendar date in Asia/Jakarta (WIB).
@@ -255,13 +267,14 @@ export async function resolveOpenKep(eventId: string, now = new Date()): Promise
     const end = str(k.fields[F.eventKep.tanggalSelesai]).slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(end) && today > end) throw new RegistrationClosedError();
   }
-  let nama = "";
-  try {
-    nama = str((await getRecord(T.events, eventId)).fields[F.events.namaAcara]);
-  } catch {
-    throw new RegistrationClosedError();
-  }
-  return { eventId, eventKepId: keps[0].id, nama: nama || "KEP" };
+  return keps;
+}
+
+/** Name and EventID text of one Events row (cached 10 min; the EventID never changes). Null: no such event. */
+async function eventInfo(eventId: string): Promise<{ nama: string; eventIdText: string } | null> {
+  const rows = await cachedList(T.events, [F.events.namaAcara, EVENT_ID_FIELD], `RECORD_ID()="${eventId}"`, { ttlMs: 10 * 60_000 });
+  const r = rows.find((x) => x.id === eventId);
+  return r ? { nama: str(r.fields[F.events.namaAcara]), eventIdText: str(r.fields[EVENT_ID_FIELD]) } : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -291,6 +304,8 @@ async function findMatches(input: PesertaInput): Promise<{ byWa: AtRecord[]; byE
 }
 
 type PersonCtx = { eventId?: string; actorEmail?: string; defer?: (fn: () => Promise<unknown>) => void };
+/** Signed-in actor email, or the "publik" marker (Sesudah.actorType; AuditKEP.Pelaku is an email field). */
+const actorOf = (actorEmail?: string) => (actorEmail ? { actorEmail } : { actorType: "publik" as const });
 /** mailTo/mailName: where the confirmation goes. For an existing person that is the address ON FILE, never the submitted one. */
 export type ResolvedPerson = { personId: string; created: boolean; mailTo: string | null; mailName: string | null };
 
@@ -316,11 +331,11 @@ async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<
   const { byWa, byEmail } = await findMatches(input);
   const common = byWa.find((r) => byEmail.some((e) => e.id === r.id));
   const chosen = common ?? byWa[0] ?? byEmail[0];
-  const actorEmail = ctx.actorEmail ?? "publik";
+  const actor = actorOf(ctx.actorEmail);
   if (!common && byWa[0] && byEmail[0]) {
     // WA and email belong to two different people: never merge. Register against the WA match and flag it.
     await logAudit({
-      actorEmail,
+      ...actor,
       action: "registrasi_konflik_identitas",
       targetId: ctx.eventId ?? "registrasi",
       after: { waPersonId: byWa[0].id, emailPersonId: byEmail[0].id },
@@ -332,7 +347,7 @@ async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<
     const mailTo = onFileEmail(chosen);
     if (mailTo !== input.email)
       await softAudit(ctx, {
-        actorEmail,
+        ...actor,
         action: "registrasi_untuk_orang_terdaftar",
         targetId: ctx.eventId ?? "registrasi",
         after: { personId: chosen.id, emailTersimpan: mailTo ? "ada" : "kosong" },
@@ -357,7 +372,7 @@ async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<
   const same = new Map([...again.byWa, ...again.byEmail].map((r) => [r.id, r]));
   const winner = [...same.values()].sort(byAge(TEAM_UMAT_CREATED))[0];
   if (winner && winner.id !== made.id && same.has(made.id)) {
-    await softAudit(ctx, { actorEmail, action: "registrasi_person_ganda", targetId: ctx.eventId ?? "registrasi", after: { dipakai: winner.id, yatim: made.id } });
+    await softAudit(ctx, { ...actor, action: "registrasi_person_ganda", targetId: ctx.eventId ?? "registrasi", after: { dipakai: winner.id, yatim: made.id } });
     return { personId: winner.id, created: false, mailTo: onFileEmail(winner), mailName: safeName(winner.fields[U.namaLengkap]) };
   }
   return { personId: made.id, created: true, mailTo: input.email, mailName: input.namaLengkap };
@@ -391,12 +406,7 @@ async function withLock<R>(key: string, fn: () => Promise<R>): Promise<R> {
 }
 
 async function activeRows(kep: OpenKep, personId: string): Promise<AtRecord[]> {
-  let eventIdText = "";
-  try {
-    eventIdText = str((await getRecord(T.events, kep.eventId)).fields[EVENT_ID_FIELD]);
-  } catch {
-    /* fall back to an unfiltered read */
-  }
+  const eventIdText = (await eventInfo(kep.eventId))?.eventIdText ?? ""; // empty: unfiltered read (fallback)
   const rows = await listRecords(T.pendaftaranEvents, {
     fields: [P.event, P.teamUmat, P.statusPendaftaran, PENDAFTARAN_CREATED],
     ...(eventIdText ? { filterByFormula: `FIND(${q(eventIdText)},ARRAYJOIN({${P.event}}))>0` } : {}),
@@ -422,7 +432,7 @@ export async function registerPeserta(
   const kep = await resolveOpenKep(eventId);
   const out = await withLock(kep.eventId, async () => {
     const kepAgain = await resolveOpenKep(eventId); // the status may have changed while we waited for the lock
-    const parokis = await listRecords(T.paroki, { fields: [F.paroki.nama] });
+    const parokis = await cachedList(T.paroki, [F.paroki.nama]);
     if (!parokis.some((p) => p.id === input.parokiAsalId)) throw new RegistrationInputError("Paroki asal tidak valid");
     const person = await resolvePerson(input, { eventId: kepAgain.eventId, actorEmail: opts.actorEmail, defer: opts.defer });
 
@@ -432,7 +442,7 @@ export async function registerPeserta(
     // Consent is recorded (AuditKEP only, no Airtable field) BEFORE any health data is stored; failure aborts.
     if (hasHealthData(input))
       await logAudit({
-        actorEmail: opts.actorEmail ?? "publik",
+        ...actorOf(opts.actorEmail),
         action: "persetujuan_data_kesehatan",
         targetId: `${kepAgain.eventId}:${person.personId}`,
         after: { waktu: new Date().toISOString() },
@@ -459,7 +469,7 @@ export async function registerPeserta(
         await updateRecords(T.pendaftaranEvents, [{ id: made.id, fields: pickPublicRegistration(T.pendaftaranEvents, { [P.statusPendaftaran]: DUPLICATE_STATUS }) }]);
       } catch {
         try {
-          await logAudit({ actorEmail: opts.actorEmail ?? "publik", action: "registrasi_duplikat_gagal_ditandai", targetId: made.id, after: { pemenang: winner.id } });
+          await logAudit({ ...actorOf(opts.actorEmail), action: "registrasi_duplikat_gagal_ditandai", targetId: made.id, after: { pemenang: winner.id } });
         } catch {
           /* still answer already_registered */
         }
@@ -487,7 +497,7 @@ export async function registerPeserta(
     const lim = await rateLimit(limitKey("daftar-mail-penerima", to), 3, 3600);
     if (!lim.ok) {
       try {
-        await logAudit({ actorEmail: opts.actorEmail ?? "publik", action: "email_konfirmasi_dilewati", targetId: out.id, after: { alasan: "batas penerima" } });
+        await logAudit({ ...actorOf(opts.actorEmail), action: "email_konfirmasi_dilewati", targetId: out.id, after: { alasan: "batas penerima" } });
       } catch {
         /* soft */
       }

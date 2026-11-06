@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, store } from "../helpers/fake-airtable";
+import { resetReadCache } from "@/lib/airtable/cacheStore";
 
 vi.mock("@/lib/airtable/client", () => fakeClientModule());
 vi.mock("@/lib/kep/readModel", () => ({ invalidateKepCache: vi.fn() }));
@@ -277,6 +278,7 @@ describe("tetapkanHasil", () => {
     expect(await status(tetapkanHasil(admB, KEP_A, pid(1), "LULUS", op("h")))).toBe(404);
     expect(await status(tetapkanHasil(pic, KEP_A, pid(99), "LULUS", op("h")))).toBe(404);
     store[T.eventKep][0].fields[F.eventKep.statusPersetujuan] = "Diajukan";
+    resetReadCache(); // a direct Airtable edit is seen once the 45 s scope cache expires
     expect(await status(tetapkanHasil(pic, KEP_A, pid(1), "LULUS", op("h")))).toBe(409);
   });
 });
@@ -317,11 +319,11 @@ describe("round 1 fixes", () => {
     expect(hadirOf(pid(1))).toEqual([S1]);
     expect(audits("absen_set_ulang")).toHaveLength(1);
   });
-  it("I-3: a second verify read after a delay re-applies a link lost to another instance", async () => {
+  it("I-3: with ABSEN_RECHECK_MS > 0, a delayed verify read re-applies a link lost to another instance", async () => {
+    vi.stubEnv("ABSEN_RECHECK_MS", "1");
     const orig = vi.mocked(client.getRecord).getMockImplementation()!;
     vi.mocked(client.getRecord)
-      .mockImplementationOnce(orig) // fresh read
-      .mockImplementationOnce(orig) // first verify
+      .mockImplementationOnce(orig) // fresh read (the PATCH response is the first verify)
       .mockImplementationOnce(async (t: string, id: string) => {
         const r = await orig(t, id);
         r.fields[P.pertemuanHadir] = [];
@@ -338,19 +340,24 @@ describe("round 1 fixes", () => {
     expect((await getAbsenSheet(pic, KEP_A, S1)).hadirCount).toBe(70);
     expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 70, remaining: 0 });
   });
-  it("I-4: a time budget stops the run after at least one peserta", async () => {
+  it("I-4: a time budget stops the run after at least one batch of 10", async () => {
+    seed(Array.from({ length: 25 }, (_, i) => `N${String(i).padStart(3, "0")}`));
     vi.stubEnv("ABSEN_SEMUA_BUDGET_MS", "0");
     const r = await setSemuaHadir(pic, KEP_A, S1, op("s"));
-    expect(r).toEqual({ updated: 1, remaining: 3 });
+    expect(r).toEqual({ updated: 10, remaining: 15 });
+    expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 20, remaining: 5 });
   });
   it("I-4: the end-of-run re-list re-applies a link that was lost", async () => {
     const orig = vi.mocked(client.updateRecords).getMockImplementation()!;
     let n = 0;
     vi.mocked(client.updateRecords).mockImplementation(async (t: string, rows: { id: string; fields: Record<string, unknown> }[], e?: Set<string>) => {
-      if (t === T.pendaftaranEvents && ++n === 2) return []; // second peserta write silently lost
+      // first batch PATCH: the second peserta's link silently does not stick (absent from the response)
+      if (t === T.pendaftaranEvents && ++n === 1) return orig(t, rows.filter((_, i) => i !== 1), e);
       return orig(t, rows, e);
     });
     expect(await setSemuaHadir(pic, KEP_A, S1, op("s"))).toEqual({ updated: 4, remaining: 0 });
+    expect(n).toBe(2); // one batch + one re-apply batch
+    expect(audits("absen_set_ulang")).toHaveLength(1);
     for (const i of [1, 2, 3, 4]) expect(hadirOf(pid(i))).toEqual([S1]);
     vi.mocked(client.updateRecords).mockImplementation(orig);
   });

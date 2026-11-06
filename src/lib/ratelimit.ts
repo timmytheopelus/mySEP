@@ -56,6 +56,7 @@ function noSharedStore(): boolean {
 export function resetRateLimitMemory(): void {
   mem.clear();
   revoked.clear();
+  memJson.clear();
 }
 
 /**
@@ -149,4 +150,56 @@ export async function rateLimit(
   } catch {
     return (opts.failClosed ?? true) ? { ok: false, retryAfter: FAIL_CLOSED_RETRY_S } : { ok: true, retryAfter: 0 };
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Small shared JSON values (public landing stats): Upstash when configured, per-process memory in dev/tests,
+// nothing in production without Upstash. Best effort: errors read as "absent" and writes report false.
+// ---------------------------------------------------------------------------------------------
+const memJson = new Map<string, { v: string; until: number }>();
+
+export async function sharedGetJson<T>(key: string): Promise<T | null> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  let raw: unknown = null;
+  if (!url || !token) {
+    if (!memoryStoreAllowed()) return null;
+    const e = memJson.get(key);
+    raw = e && e.until > Date.now() ? e.v : null;
+  } else {
+    try {
+      const [r] = await pipeline(url, token, [["GET", key]]);
+      raw = failed(r) ? null : r.result;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "string") return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+export async function sharedSetJson(key: string, value: unknown, ttlS: number): Promise<boolean> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const v = JSON.stringify(value);
+  const ttl = Math.max(1, Math.ceil(ttlS));
+  if (!url || !token) {
+    if (!memoryStoreAllowed()) return false;
+    memJson.set(key, { v, until: Date.now() + ttl * 1000 });
+    return true;
+  }
+  try {
+    const [r] = await pipeline(url, token, [["SET", key, v, "EX", ttl]]);
+    return !failed(r) && r.result === "OK";
+  } catch {
+    return false;
+  }
+}
+
+export function resetSharedJsonMemory(): void {
+  memJson.clear();
 }

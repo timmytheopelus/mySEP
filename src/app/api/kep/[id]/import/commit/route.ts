@@ -10,7 +10,15 @@ import { RegistrationInputError, registerPeserta } from "@/lib/kep/registration"
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
+/**
+ * Worst case per row on a warm cache (EventKEP, Events and Paroki reads are cached): TeamUmat match (1) + active
+ * rows before/after (2) + Pendaftaran create (1) + new person create and race re-check (2) + consent audit (1) = 7
+ * Airtable calls. 100 rows (MAX_ROWS) = 700 + 3 (previous run, start, finish) ~ 176 s at 4 req/s. IMPORT_BUDGET_MS
+ * (default 240 s) stops starting new rows before maxDuration; those rows answer "ulangi" and a re-run of the same
+ * file continues (registration dedups per person).
+ */
 export const maxDuration = 300;
+const budgetMs = () => Number(process.env.IMPORT_BUDGET_MS) || 240_000;
 
 type Summary = { registered: number; alreadyRegistered: number; failed: number; failedRows: { row: number; message: string }[]; ulang?: boolean };
 const inflight = new Map<string, Promise<Summary>>();
@@ -73,7 +81,14 @@ export const POST = withAuth<{ id: string }>(
       await logAudit({ actorEmail: session.email, action: "import_peserta_mulai", targetId: params.id, after: { opId, t: Date.now(), sha256, valid: parsed.rows.length, galat: parsed.errors.length } });
       let transien = 0;
       const s: Summary = { registered: 0, alreadyRegistered: 0, failed: parsed.errors.length, failedRows: [...parsed.errors] };
+      const started = Date.now();
       for (const item of parsed.items) {
+        if (Date.now() - started > budgetMs()) {
+          s.failed++;
+          transien++;
+          s.failedRows.push({ row: item.row, message: "Belum diproses (batas waktu). Unggah ulang berkas yang sama untuk melanjutkan." });
+          continue;
+        }
         try {
           const r = await registerPeserta(eventId, item.data, { actorEmail: session.email });
           if (r.status === "registered") s.registered++;

@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 // Plain function (not vi.fn): a vi.fn returning a rejected promise is reported by vitest as a test error.
 let impl: () => Promise<unknown>;
-vi.mock("@/lib/kep/readModel", () => ({ publicStats: () => impl() }));
+vi.mock("@/lib/kep/readModel", () => ({ publicStatsForPage: () => impl() }));
+vi.mock("next/headers", () => ({ headers: async () => new Headers({ "x-real-ip": "203.0.113.9" }) }));
 
 import LandingPage from "../../src/app/(public)/page";
 

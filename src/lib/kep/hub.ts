@@ -1,7 +1,7 @@
 import "server-only";
-import { getRecord, listRecords } from "@/lib/airtable/client";
+import { cachedList } from "@/lib/airtable/cache";
 import { F, T } from "@/lib/airtable/schema";
-import { assertKepInScope, listKepInScope, listPesertaInScope, requireRole } from "@/lib/auth/guard";
+import { assertKepInScope, listKepInScope, listLinkedToEvents, listPesertaInScope, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 import { MUNDUR, namesOf } from "@/lib/kep/absensi";
 
@@ -54,14 +54,15 @@ export async function getKepHub(session: Session, eventKepId: string): Promise<K
   requireRole(session, ["SEP", "PIC", "ADMIN"]);
   const { eventKep } = await assertKepInScope(session, eventKepId); // 404 for foreign / unknown / malformed
   const eventIds = ids(eventKep.fields[F.eventKep.events]);
-  const rec = await getRecord(T.eventKep, eventKepId);
-  const status = str(rec.fields[F.eventKep.statusPersetujuan]) || str(eventKep.fields[F.eventKep.statusPersetujuan]);
+  const rec = eventKep; // cached scope row (45 s) carries status, angkatan and dates: no extra read
+  const status = str(rec.fields[F.eventKep.statusPersetujuan]);
   const angkatan = typeof rec.fields[F.eventKep.angkatan] === "number" ? (rec.fields[F.eventKep.angkatan] as number) : null;
 
   let nama = "";
-  if (eventIds[0]) {
+  if (eventIds[0] && /^rec[A-Za-z0-9]{10,}$/.test(eventIds[0])) {
     try {
-      nama = str((await getRecord(T.events, eventIds[0])).fields[F.events.namaAcara]).trim();
+      const ev = await cachedList(T.events, [F.events.namaAcara], `RECORD_ID()="${eventIds[0]}"`, { ttlMs: 10 * 60_000 });
+      nama = str(ev.find((e) => e.id === eventIds[0])?.fields[F.events.namaAcara]).trim();
     } catch {
       /* fall back below */
     }
@@ -69,7 +70,8 @@ export async function getKepHub(session: Session, eventKepId: string): Promise<K
 
   const [pend, subs] = await Promise.all([
     listPesertaInScope(session, [P.teamUmat, P.statusPendaftaran, P.kategoriKepesertaan, P.keterangan, P.pertemuanHadir], eventKepId),
-    listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan, F.subEvent.pengajar] }),
+    // only this KEP's pertemuan (EventID filter, cached), never the whole SubEvent table
+    listLinkedToEvents(T.subEvent, F.subEvent.acara, [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan, F.subEvent.pengajar], eventIds),
   ]);
   const countable = pend.filter(
     (r) => !INACTIVE.has(str(r.fields[P.statusPendaftaran]).toLowerCase()) && str(r.fields[P.kategoriKepesertaan]).toLowerCase() !== "panitia",
@@ -133,13 +135,17 @@ export type KepIndexItem = { id: string; nama: string; angkatan: number | null; 
 /** KEPs the actor may see: PIC/Admin their own parish, SEP all. Names from the linked Events row. */
 export async function listKepIndex(session: Session): Promise<KepIndexItem[]> {
   requireRole(session, ["SEP", "PIC", "ADMIN"]);
-  const inScope = new Set((await listKepInScope(session)).map((k) => k.id));
-  // The scope list only carries the fields the guard needs; angkatan / dates are read here.
-  const [all, events] = await Promise.all([
-    listRecords(T.eventKep, { fields: [F.eventKep.events, F.eventKep.statusPersetujuan, F.eventKep.angkatan, F.eventKep.tanggalMulai] }),
-    listRecords(T.events, { fields: [F.events.namaAcara] }),
-  ]);
-  const keps = all.filter((k) => inScope.has(k.id));
+  // The scope list (cached) carries events, status, angkatan and tanggal mulai.
+  const keps = await listKepInScope(session);
+  // Names of exactly these events (RECORD_ID chunks, cached), never the whole Events table.
+  const want = [...new Set(keps.flatMap((k) => ids(k.fields[F.eventKep.events]).slice(0, 1)))].filter((i) => /^rec[A-Za-z0-9]{10,}$/.test(i)).sort();
+  const events = (
+    await Promise.all(
+      Array.from({ length: Math.ceil(want.length / 15) }, (_, i) =>
+        cachedList(T.events, [F.events.namaAcara], `OR(${want.slice(i * 15, i * 15 + 15).map((id) => `RECORD_ID()="${id}"`).join(",")})`, { ttlMs: 10 * 60_000 }),
+      ),
+    )
+  ).flat();
   const nameOf = new Map(events.map((e) => [e.id, str(e.fields[F.events.namaAcara]).trim()]));
   const out: KepIndexItem[] = [];
   for (const k of keps) {

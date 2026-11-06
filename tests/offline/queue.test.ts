@@ -65,7 +65,7 @@ describe("offline queue", () => {
     expect(await pendingOps()).toEqual([]);
   });
 
-  it.each([401, 429, 500, 503])("transient %i stops the flush and keeps the op queued", async (status) => {
+  it.each([401, 429, 500, 502, 503, 504])("transient %i stops the flush and keeps the op queued", async (status) => {
     for (const n of [1, 2]) await enqueue(op(n));
     const r = await flush(async () => status);
     expect(r).toMatchObject({ sent: 0, pending: 2, dead: [] });

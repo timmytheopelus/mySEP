@@ -47,7 +47,7 @@ async function recipients(kepId: string, organizerIds: string[], submittedBy: st
  */
 export async function decideKep(actor: Session, eventKepId: string, decision: Keputusan, catatan: string): Promise<{ emailTerkirim: boolean }> {
   requireRole(actor, ["SEP"]);
-  const { eventKep } = await assertKepInScope(actor, eventKepId);
+  const { eventKep } = await assertKepInScope(actor, eventKepId, { fresh: true }); // status decides: never from cache
   if (decision !== "Disetujui" && decision !== "Ditolak") throw new HttpError(422, "Keputusan tidak valid");
   const note = typeof catatan === "string" ? catatan.trim() : "";
   if (note.length > MAX_CATATAN) throw new HttpError(422, "Catatan terlalu panjang");

@@ -13,6 +13,8 @@ import { POST as mundurRoute } from "@/app/api/kep/[id]/peserta/[pid]/mundur/rou
 import { POST as hasilRoute } from "@/app/api/kep/[id]/peserta/[pid]/penetapan/route";
 import { SESSION_COOKIE, clearSessionCache, issueSession, type Session } from "@/lib/auth/session";
 import { resetRateLimitMemory } from "@/lib/ratelimit";
+import * as client from "@/lib/airtable/client";
+import { AirtableError } from "@/lib/airtable/errors";
 
 const A = F.akunKep;
 const P = F.pendaftaranEvents;
@@ -62,6 +64,40 @@ afterEach(() => vi.unstubAllEnvs());
 
 const sp = { id: KEP, subEventId: S1 };
 const pp = { id: KEP, pid: PID };
+
+describe("I1: transient Airtable errors are 503 + Retry-After, never 404", () => {
+  const transient = (status: number) => new AirtableError(`Airtable request failed: HTTP ${status}`, status, true, 30);
+  it.each([429, 500, 502, 503])("set: a transient %i on the row read answers 503 with Retry-After (the queue retries it)", async (st) => {
+    const orig = vi.mocked(client.getRecord).getMockImplementation()!;
+    vi.mocked(client.getRecord).mockImplementationOnce(async () => {
+      throw transient(st);
+    });
+    const r = await call(setRoute, { pendaftaranId: PID, hadir: true, opId: "op-route-0901" }, { params: sp, as: pic });
+    expect(r.status).toBe(503);
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    vi.mocked(client.getRecord).mockImplementation(orig);
+    // the retry of the same op then succeeds
+    expect((await call(setRoute, { pendaftaranId: PID, hadir: true, opId: "op-route-0901" }, { params: sp, as: pic })).status).toBe(200);
+  });
+  it("network failure / local queue full while listing: 503 (not 500, not 404)", async () => {
+    const orig = vi.mocked(client.listRecords).getMockImplementation()!;
+    vi.mocked(client.listRecords).mockImplementation(async (t, o) => {
+      if (t === T.eventKep) throw new AirtableError("Airtable request failed: busy", 503, true, 2);
+      return orig(t, o);
+    });
+    try {
+      const r = await call(sheetRoute, undefined, { method: "GET", params: sp, as: pic });
+      expect(r.status).toBe(503);
+      expect(r.headers.get("retry-after")).toBe("2");
+    } finally {
+      vi.mocked(client.listRecords).mockImplementation(orig);
+    }
+  });
+  it("a genuine 404 of the row stays 404", async () => {
+    const r = await call(setRoute, { pendaftaranId: "recPENDMISSING0001", hadir: true, opId: "op-route-0902" }, { params: sp, as: pic });
+    expect(r.status).toBe(404);
+  });
+});
 
 describe("attendance routes", () => {
   it("GET sheet: 401 anonymous, 403 SEP, 404 other parish, 200 PIC", async () => {

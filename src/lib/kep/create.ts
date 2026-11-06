@@ -1,7 +1,7 @@
 import "server-only";
 import { createRecords, getRecord, listRecords } from "@/lib/airtable/client";
 import { F, RESTRICTED, T, pickAllowedForRole } from "@/lib/airtable/schema";
-import { requireRole } from "@/lib/auth/guard";
+import { notFoundOrBusy, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 import { logAudit } from "@/lib/audit/log";
 import { HttpError } from "@/lib/http/errors";
@@ -78,8 +78,8 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
   try {
     const p = await getRecord(T.paroki, own);
     parokiNama = String(p.fields[F.paroki.nama] ?? "").replace(/\s+/g, " ").trim();
-  } catch {
-    throw new HttpError(404);
+  } catch (e) {
+    throw notFoundOrBusy(e);
   }
   if (!parokiNama) throw new HttpError(422, "Nama paroki belum diisi");
   const nama = `KEP PAROKI ${parokiNama.toUpperCase()} ANGKATAN ${angkatan}`;

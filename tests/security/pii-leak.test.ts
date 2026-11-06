@@ -38,6 +38,7 @@ const assertNoHealth = (where: string, text: string) => {
 
 describe("public surfaces never carry personal, health or BPK data", () => {
   it("landing page (with live public stats from the fixture)", async () => {
+    await publicStats(); // warm instance (a cold one renders the static fallback, see readModel tests)
     const html = renderToStaticMarkup(await LandingPage());
     expect(html).toContain("Santa Anna"); // stats really rendered from the fixture
     assertNoPii("landing", html);

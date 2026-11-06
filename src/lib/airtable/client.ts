@@ -1,5 +1,6 @@
 import "server-only";
 import { airtableApiUrl } from "@/lib/config/prodEnv";
+import { AirtableError } from "./errors";
 import { READ_ALLOWED, pickAllowed } from "./schema";
 
 export type AtRecord = { id: string; fields: Record<string, unknown> };
@@ -46,21 +47,123 @@ export function redactAirtableError(body: unknown): string {
   return [type.replace(/[^A-Z0-9_]/g, "").slice(0, 60), clean].filter(Boolean).join(": ");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Process-wide throttle. Airtable allows 5 requests/s per BASE (shared with every other BPK integration) and
+// answers excess with 429 plus a ~30 s penalty for the whole base. Every request of this process goes through
+// one sliding-window limiter (AIRTABLE_MAX_RPS, default 4, never above 5) with a FIFO queue; a full queue fails fast with
+// a transient 503 instead of piling up. A 429 pauses the bucket for Retry-After (default AIRTABLE_429_PAUSE_MS,
+// 30 s); a request waits at most AIRTABLE_MAX_WAIT_MS (default 30 s, queue + pause + retries) and then fails
+// with a transient error (HTTP 503 + Retry-After at the route). Per process only: N warm instances can still
+// reach N x rate, see docs/ops/runbook.md.
+// ---------------------------------------------------------------------------------------------
+
+export { AirtableError, isAirtableNotFound, isTransientAirtableError } from "./errors";
+
+const envNum = (name: string, def: number) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+/** Requests per second, clamped to (0, 5]. */
+export const maxRps = () => Math.min(5, envNum("AIRTABLE_MAX_RPS", 4));
+const maxQueue = () => Math.floor(envNum("AIRTABLE_QUEUE_MAX", 40));
+const maxWaitMs = () => envNum("AIRTABLE_MAX_WAIT_MS", 30_000);
+const pauseMs = () => envNum("AIRTABLE_429_PAUSE_MS", 30_000);
+
+/** Sliding window: at most maxRps() request starts in any 1000 ms (a plain bucket could allow 2x in a window). */
+const bucket = { starts: [] as number[], pausedUntil: 0 };
+const waiters: { resolve: () => void; reject: (e: unknown) => void; deadline: number }[] = [];
+let pumping: ReturnType<typeof setTimeout> | null = null;
+
+const busy = (retryAfterS: number) => new AirtableError("Airtable request failed: busy (local queue full or wait budget spent)", 503, true, Math.max(1, Math.ceil(retryAfterS)));
+
+function pump() {
+  pumping = null;
+  const now = Date.now();
+  const rps = maxRps();
+  while (bucket.starts.length && now - bucket.starts[0] >= 1000) bucket.starts.shift();
+  while (waiters.length) {
+    const w = waiters[0];
+    if (now > w.deadline) {
+      waiters.shift();
+      w.reject(busy((bucket.pausedUntil - now) / 1000));
+      continue;
+    }
+    if (now < bucket.pausedUntil || bucket.starts.length >= rps) break;
+    bucket.starts.push(now);
+    waiters.shift();
+    w.resolve();
+  }
+  if (waiters.length) {
+    const wait = now < bucket.pausedUntil ? bucket.pausedUntil - now : bucket.starts[0] + 1000 - now;
+    pumping = setTimeout(pump, Math.max(1, Math.min(wait, waiters[0].deadline - now + 1)));
+  }
+}
+
+/** Waits for a request slot; rejects with a transient 503 when the queue is full or the deadline would pass. */
+function acquire(deadline: number): Promise<void> {
+  const now = Date.now();
+  if (bucket.pausedUntil > deadline) return Promise.reject(busy((bucket.pausedUntil - now) / 1000));
+  if (waiters.length >= maxQueue()) return Promise.reject(busy(Math.max(1, waiters.length / maxRps())));
+  return new Promise<void>((resolve, reject) => {
+    waiters.push({ resolve, reject, deadline });
+    if (!pumping) pump();
+  });
+}
+
+/** Test hook: empties the bucket state (pending waiters are rejected). */
+export function resetAirtableThrottle(): void {
+  if (pumping) clearTimeout(pumping);
+  pumping = null;
+  for (const w of waiters.splice(0)) w.reject(busy(1));
+  bucket.starts = [];
+  bucket.pausedUntil = 0;
+}
+/** Observability/tests: current queue depth and pause. */
+export const throttleState = () => ({ queued: waiters.length, pausedForMs: Math.max(0, bucket.pausedUntil - Date.now()) });
+
+function retryAfterMs(res: Response): number {
+  const h = res.headers.get("retry-after");
+  const n = h === null ? NaN : Number(h);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n * 1000, 120_000) : pauseMs();
+}
+
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const token = process.env.AIRTABLE_TOKEN;
   if (!token) throw new Error("AIRTABLE_TOKEN is not set");
-  const backoff = Number(process.env.AIRTABLE_BACKOFF_MS) || 500;
+  const backoff = envNum("AIRTABLE_BACKOFF_MS", 500);
+  const isRead = !init.method || init.method === "GET";
+  const deadline = Date.now() + maxWaitMs();
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...(init.headers as Record<string, string> | undefined),
-      },
-    });
-    if (res.status === 429 && attempt < MAX_RETRIES) {
-      await sleep(backoff * 2 ** attempt);
+    await acquire(deadline);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          ...(init.headers as Record<string, string> | undefined),
+        },
+      });
+    } catch {
+      // Network error: a read is retried once; a write may or may not have landed, so it is never repeated here.
+      if (isRead && attempt < 1 && Date.now() + backoff < deadline) {
+        await sleep(backoff);
+        continue;
+      }
+      throw new AirtableError("Airtable request failed: network", 0, true, 5);
+    }
+    if (res.status === 429) {
+      // Not processed by Airtable: safe to repeat, reads and writes alike. Pause the whole process meanwhile.
+      const wait = retryAfterMs(res);
+      bucket.pausedUntil = Math.max(bucket.pausedUntil, Date.now() + wait);
+      res.body?.cancel().catch(() => {});
+      if (attempt < MAX_RETRIES && bucket.pausedUntil <= deadline) continue;
+      throw new AirtableError("Airtable request failed: HTTP 429", 429, true, Math.ceil(Math.max(1000, bucket.pausedUntil - Date.now()) / 1000));
+    }
+    if (res.status >= 500 && isRead && attempt < 1 && Date.now() + backoff < deadline) {
+      res.body?.cancel().catch(() => {});
+      await sleep(backoff);
       continue;
     }
     if (!res.ok) {
@@ -70,7 +173,8 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
       } catch {
         /* no JSON body */
       }
-      throw new Error(`Airtable request failed: HTTP ${res.status}${detail ? ` (${detail})` : ""}`);
+      const transient = res.status >= 500;
+      throw new AirtableError(`Airtable request failed: HTTP ${res.status}${detail ? ` (${detail})` : ""}`, res.status, transient, transient ? 5 : undefined);
     }
     return (await res.json()) as T;
   }

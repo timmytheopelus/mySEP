@@ -1,17 +1,19 @@
 import "server-only";
 import { getRecord, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
-import { assertKepInScope, listPesertaInScope, requireRole } from "@/lib/auth/guard";
+import { assertKepInScope, listLinkedToEvents, listPesertaInScope, notFoundOrBusy, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
-import { logAudit } from "@/lib/audit/log";
+import { logAudit, logAuditBatch } from "@/lib/audit/log";
 import { HttpError } from "@/lib/http/errors";
 import { invalidateKepCache } from "@/lib/kep/readModel";
+import { invalidateTable } from "@/lib/airtable/cache";
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 export const OP_ID = /^[A-Za-z0-9_-]{8,64}$/;
 export const MUNDUR = "MENGUNDURKAN DIRI";
 export type Hasil = "LULUS" | "TIDAK LULUS";
 const MAX_SEMUA = 60;
+const BATCH = 10; // Airtable write batch size
 const NAME_CHUNK = 50;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const P = F.pendaftaranEvents;
@@ -45,6 +47,12 @@ function serial<R>(key: string, fn: () => Promise<R>): Promise<R> {
     if (tails.get(key) === tail) tails.delete(key);
   });
   return run;
+}
+
+/** Holds the per-peserta locks of every id (sorted, so two batches never deadlock; single taps hold one). */
+function serialAll<R>(keys: string[], fn: () => Promise<R>): Promise<R> {
+  const [k, ...rest] = [...new Set(keys)].sort();
+  return k === undefined ? fn() : serial(k, () => serialAll(rest, fn));
 }
 
 // ---- opId markers in AuditKEP (opId is also stored in the Op ID field; payload lives in Sesudah) ----
@@ -104,7 +112,9 @@ type Ctx = { eventKepId: string; eventIds: string[] };
 /** PIC/ADMIN of the owning paroki (SEP: 403, other parish: 404), KEP must be Disetujui (409). */
 async function scope(actor: Session, eventKepId: string): Promise<Ctx> {
   requireRole(actor, ["PIC", "ADMIN"]);
-  const { eventKep } = await assertKepInScope(actor, eventKepId);
+  // Cached scope (a Disetujui KEP never goes back); anything else is re-read fresh once (just approved elsewhere).
+  let { eventKep } = await assertKepInScope(actor, eventKepId);
+  if (str(eventKep.fields[F.eventKep.statusPersetujuan]) !== "Disetujui") ({ eventKep } = await assertKepInScope(actor, eventKepId, { fresh: true }));
   if (str(eventKep.fields[F.eventKep.statusPersetujuan]) !== "Disetujui") throw new HttpError(409, "KEP belum disetujui");
   return { eventKepId, eventIds: ids(eventKep.fields[F.eventKep.events]) };
 }
@@ -117,15 +127,20 @@ async function fetch404(table: string, id: string): Promise<AtRecord> {
   if (typeof id !== "string" || !REC_ID.test(id)) throw new HttpError(404);
   try {
     return await getRecord(table, id);
-  } catch {
-    throw new HttpError(404);
+  } catch (e) {
+    throw notFoundOrBusy(e); // genuine 404 -> 404; 429/5xx/network -> 503 + Retry-After (never a dead-lettered tap)
   }
 }
 
+const SUB_FIELDS = [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan];
+/** Pertemuan of this KEP, filtered by its events and cached (45 s; refreshed once on a miss). */
+const subEventsOf = (ctx: Ctx, maxAgeMs?: number) => listLinkedToEvents(T.subEvent, F.subEvent.acara, SUB_FIELDS, ctx.eventIds, maxAgeMs === undefined ? {} : { maxAgeMs });
+
 /** The pertemuan must hang under one of this KEP's events (ids from the URL / body are never trusted). */
 async function ownSubEvent(ctx: Ctx, subEventId: string): Promise<AtRecord> {
-  const sub = await fetch404(T.subEvent, subEventId);
-  if (!ids(sub.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e))) throw new HttpError(404);
+  if (typeof subEventId !== "string" || !REC_ID.test(subEventId)) throw new HttpError(404);
+  const sub = (await subEventsOf(ctx)).find((s) => s.id === subEventId) ?? (await subEventsOf(ctx, 5_000)).find((s) => s.id === subEventId);
+  if (!sub) throw new HttpError(404);
   return sub;
 }
 
@@ -141,8 +156,10 @@ export type AbsenSheet = {
   aktifCount: number;
 };
 
-async function pesertaRows(actor: Session, ctx: Ctx): Promise<AtRecord[]> {
-  const rows = await listPesertaInScope(actor, [P.event, P.teamUmat, P.statusPendaftaran, P.kategoriKepesertaan, P.keterangan, P.pertemuanHadir], ctx.eventKepId);
+const PESERTA_FIELDS = [P.event, P.teamUmat, P.statusPendaftaran, P.kategoriKepesertaan, P.keterangan, P.pertemuanHadir];
+/** Countable peserta of the KEP: cached 15 s for sheets, `fresh` for write paths. */
+async function pesertaRows(actor: Session, ctx: Ctx, fresh = false): Promise<AtRecord[]> {
+  const rows = await listPesertaInScope(actor, PESERTA_FIELDS, ctx.eventKepId, { fresh });
   return rows.filter(isCountable);
 }
 
@@ -186,8 +203,21 @@ export async function getAbsenSheet(actor: Session, eventKepId: string, subEvent
 /** Set semantics on the link array: add when absent (true) / remove only this SubEvent (false). */
 const nextLinks = (cur: string[], sub: string, hadir: boolean) => (hadir ? (cur.includes(sub) ? cur : [...cur, sub]) : cur.filter((x) => x !== sub));
 
-type CoreOpts = { checkMarker: boolean; verify: boolean; aksi?: "absen_set" | "absen_set_ulang" };
+type CoreOpts = { checkMarker: boolean };
 
+/** Links as Airtable returned them in the PATCH response (the written state), or null when the row is missing. */
+const linksIn = (res: AtRecord[], id: string): string[] | null => {
+  const r = res.find((x) => x.id === id);
+  return r ? ids(r.fields[P.pertemuanHadir]) : null;
+};
+const recheckMs = () => Number(process.env.ABSEN_RECHECK_MS ?? 0) || 0;
+
+/**
+ * One tap. Airtable calls on a warm cache: read the row (1), one AuditKEP marker lookup (1), audit (1), PATCH (1);
+ * the PATCH response is the verification (it carries the written links). A response without the link is one
+ * re-write (+1) and then 503. ABSEN_RECHECK_MS > 0 adds an optional delayed re-read (off by default: it doubled
+ * the cost of every tap to catch a cross-instance clobber that the end-of-day reconciliation also finds).
+ */
 async function setHadirCore(actor: Session, ctx: Ctx, subEventId: string, pendaftaranId: string, hadir: boolean, opId: string, o: CoreOpts): Promise<{ hadir: boolean; changed: boolean }> {
   if (typeof pendaftaranId !== "string" || !REC_ID.test(pendaftaranId)) throw new HttpError(404);
   return serial(pendaftaranId, async () => {
@@ -195,7 +225,7 @@ async function setHadirCore(actor: Session, ctx: Ctx, subEventId: string, pendaf
     if (isMundur(rec)) throw new HttpError(409, "Peserta sudah mengundurkan diri");
     let cur = ids(rec.fields[P.pertemuanHadir]);
     const has = cur.includes(subEventId);
-    let aksi = o.aksi ?? "absen_set";
+    let aksi = "absen_set";
     if (o.checkMarker) {
       const mk = await findMarker("absen_set", pendaftaranId, opId);
       if (mk) {
@@ -207,7 +237,7 @@ async function setHadirCore(actor: Session, ctx: Ctx, subEventId: string, pendaf
         aksi = "absen_set_ulang";
       }
     }
-    if (has === hadir && aksi === (o.aksi ?? "absen_set")) return { hadir: has, changed: false };
+    if (has === hadir && aksi === "absen_set") return { hadir: has, changed: false };
     await logAudit({
       actorEmail: actor.email,
       action: aksi,
@@ -220,32 +250,31 @@ async function setHadirCore(actor: Session, ctx: Ctx, subEventId: string, pendaf
       await auditFailure(actor.email, aksi, pendaftaranId, opId);
       throw e;
     };
-    const write = (links: string[]) => updateRecords(T.pendaftaranEvents, [{ id: pendaftaranId, fields: { [P.pertemuanHadir]: links } }]);
-    const readLinks = async () => ids((await getRecord(T.pendaftaranEvents, pendaftaranId)).fields[P.pertemuanHadir]);
+    const write = async (links: string[]) => linksIn(await updateRecords(T.pendaftaranEvents, [{ id: pendaftaranId, fields: { [P.pertemuanHadir]: links } }]), pendaftaranId);
     try {
-      if (!o.verify) {
-        await write(nextLinks(cur, subEventId, hadir));
-        return { hadir, changed: true };
-      }
       let ok = false;
       for (let attempt = 0; attempt < 2 && !ok; attempt++) {
-        await write(nextLinks(cur, subEventId, hadir));
-        cur = await readLinks();
-        ok = cur.includes(subEventId) === hadir;
+        const back = await write(nextLinks(cur, subEventId, hadir));
+        if (back) cur = back;
+        ok = !!back && back.includes(subEventId) === hadir;
       }
-      if (!ok) return await fail(new HttpError(503, "Absensi belum tersimpan. Coba lagi."));
-      // Second verify after a short delay: catches a link array clobbered by another instance's write.
-      await sleep(Number(process.env.ABSEN_RECHECK_MS ?? 400) || 0);
-      cur = await readLinks();
-      if (cur.includes(subEventId) !== hadir) {
-        await write(nextLinks(cur, subEventId, hadir));
-        cur = await readLinks();
-        if (cur.includes(subEventId) !== hadir) return await fail(new HttpError(503, "Absensi belum tersimpan. Coba lagi."));
+      if (!ok) return await fail(new HttpError(503, "Absensi belum tersimpan. Coba lagi.", 5));
+      if (recheckMs() > 0) {
+        // Optional delayed verify: catches a link array clobbered by another instance's write.
+        await sleep(recheckMs());
+        cur = ids((await getRecord(T.pendaftaranEvents, pendaftaranId)).fields[P.pertemuanHadir]);
+        if (cur.includes(subEventId) !== hadir) {
+          const back = await write(nextLinks(cur, subEventId, hadir));
+          if (!back || back.includes(subEventId) !== hadir) return await fail(new HttpError(503, "Absensi belum tersimpan. Coba lagi.", 5));
+          cur = back;
+        }
       }
       return { hadir: cur.includes(subEventId), changed: true };
     } catch (e) {
       if (e instanceof HttpError && e.status === 503) throw e;
       return fail(e);
+    } finally {
+      invalidateTable(T.pendaftaranEvents); // sheets, hub and reports of this instance see the tap at once
     }
   });
 }
@@ -255,16 +284,56 @@ export async function setHadir(actor: Session, eventKepId: string, subEventId: s
   checkOp(opId);
   if (typeof hadir !== "boolean") throw new HttpError(422, "Nilai hadir tidak valid");
   await ownSubEvent(ctx, subEventId);
-  const r = await setHadirCore(actor, ctx, subEventId, pendaftaranId, hadir, opId, { checkMarker: true, verify: true });
+  const r = await setHadirCore(actor, ctx, subEventId, pendaftaranId, hadir, opId, { checkMarker: true });
   return { hadir: r.hadir };
 }
 
 /**
- * Marks active (non-mundur) peserta present, one by one, at most MAX_SEMUA per call and within a time budget.
- * `remaining` > 0: call again with the same opId (the run resumes value-based). Finishes with ONE re-list that
- * re-applies links that did not stick.
+ * One batch of at most 10 peserta under their per-peserta locks: fresh read of exactly these rows (1 call), audit
+ * rows (1 call), one PATCH (1 call) whose response verifies every link. Returns the ids now marked and the ids whose
+ * link did not stick. Rows that turned mundur / foreign / already present in the meantime are skipped.
+ */
+async function semuaBatch(actor: Session, ctx: Ctx, subEventId: string, opId: string, batch: string[], aksi: "absen_set" | "absen_set_ulang"): Promise<{ marked: string[]; lost: string[] }> {
+  return serialAll(batch, async () => {
+    const rows = (
+      await listRecords(T.pendaftaranEvents, { fields: PESERTA_FIELDS, filterByFormula: `OR(${batch.map((id) => `RECORD_ID()="${id}"`).join(",")})` })
+    ).filter((r) => batch.includes(r.id) && ids(r.fields[P.event]).some((e) => ctx.eventIds.includes(e)) && isCountable(r) && !isMundur(r));
+    const todo = rows.filter((r) => !ids(r.fields[P.pertemuanHadir]).includes(subEventId));
+    if (todo.length === 0) return { marked: [], lost: [] };
+    const t = Date.now();
+    await logAuditBatch(
+      todo.map((r) => ({
+        actorEmail: actor.email,
+        action: aksi,
+        targetId: r.id,
+        before: { subEventId, hadir: false },
+        after: { opId: `${opId}:${r.id}`, t, kepId: ctx.eventKepId, subEventId, hadir: true },
+        opId: `${opId}:${r.id}`,
+      })),
+    );
+    let res: AtRecord[];
+    try {
+      res = await updateRecords(T.pendaftaranEvents, todo.map((r) => ({ id: r.id, fields: { [P.pertemuanHadir]: nextLinks(ids(r.fields[P.pertemuanHadir]), subEventId, true) } })));
+    } catch (e) {
+      await Promise.all(todo.map((r) => auditFailure(actor.email, aksi, r.id, `${opId}:${r.id}`)));
+      throw e;
+    } finally {
+      invalidateTable(T.pendaftaranEvents);
+    }
+    const marked: string[] = [];
+    const lost: string[] = [];
+    for (const r of todo) (linksIn(res, r.id)?.includes(subEventId) ? marked : lost).push(r.id);
+    return { marked, lost };
+  });
+}
+
+/**
+ * Marks active (non-mundur) peserta present, at most MAX_SEMUA per call and within a time budget, in batches of 10
+ * (3 Airtable calls per 10 peserta instead of ~4 per peserta). `remaining` > 0: call again with the same opId (the
+ * run resumes value-based). Links whose PATCH response did not show them are re-applied once (absen_set_ulang).
  */
 export async function setSemuaHadir(actor: Session, eventKepId: string, subEventId: string, opId: string): Promise<{ updated: number; remaining: number }> {
+  const start = Date.now();
   const ctx = await scope(actor, eventKepId);
   checkOp(opId);
   await ownSubEvent(ctx, subEventId);
@@ -274,35 +343,24 @@ export async function setSemuaHadir(actor: Session, eventKepId: string, subEvent
     if (earlier.remaining === 0 && typeof earlier.updated === "number") return { updated: earlier.updated, remaining: 0 };
   }
   const base = typeof earlier?.updated === "number" ? earlier.updated : 0;
-  const todo = (await pesertaRows(actor, ctx)).filter((r) => !isMundur(r) && !ids(r.fields[P.pertemuanHadir]).includes(subEventId));
+  const todo = (await pesertaRows(actor, ctx, true)).filter((r) => !isMundur(r) && !ids(r.fields[P.pertemuanHadir]).includes(subEventId)).map((r) => r.id);
   const budget = Number(process.env.ABSEN_SEMUA_BUDGET_MS ?? 45_000);
-  const start = Date.now();
-  const done: string[] = [];
+  let done = 0;
   let updated = 0;
-  for (const r of todo) {
-    if (done.length >= MAX_SEMUA || (done.length > 0 && Date.now() - start >= budget)) break;
-    done.push(r.id);
-    try {
-      if ((await setHadirCore(actor, ctx, subEventId, r.id, true, `${opId}:${r.id}`, { checkMarker: false, verify: false })).changed) updated++;
-    } catch (e) {
-      // mundur between the list and the write: skip. Anything else stops the run (a retry resumes it).
-      if (!(e instanceof HttpError && (e.status === 409 || e.status === 404))) throw e;
-    }
+  const lost: string[] = [];
+  while (done < todo.length && done < MAX_SEMUA && (done === 0 || Date.now() - start < budget)) {
+    const batch = todo.slice(done, Math.min(done + BATCH, MAX_SEMUA, todo.length));
+    done += batch.length;
+    const r = await semuaBatch(actor, ctx, subEventId, opId, batch, "absen_set");
+    updated += r.marked.length;
+    lost.push(...r.lost);
   }
-  // One re-list: re-apply (once) any link that was lost.
-  if (done.length > 0) {
-    const have = new Map((await pesertaRows(actor, ctx)).map((r) => [r.id, r]));
-    for (const id of done) {
-      const r = have.get(id);
-      if (!r || isMundur(r) || ids(r.fields[P.pertemuanHadir]).includes(subEventId)) continue;
-      try {
-        await setHadirCore(actor, ctx, subEventId, id, true, `${opId}:${id}`, { checkMarker: false, verify: false, aksi: "absen_set_ulang" });
-      } catch (e) {
-        if (!(e instanceof HttpError)) throw e;
-      }
-    }
+  // Re-apply (once) any link that did not stick.
+  for (let i = 0; i < lost.length; i += BATCH) {
+    const r = await semuaBatch(actor, ctx, subEventId, opId, lost.slice(i, i + BATCH), "absen_set_ulang");
+    updated += r.marked.length;
   }
-  const remaining = todo.length - done.length;
+  const remaining = todo.length - done;
   const total = base + updated;
   try {
     await logAudit({ actorEmail: actor.email, action: "absen_semua", targetId: subEventId, after: { opId, t: Date.now(), kepId: eventKepId, subEventId, updated: total, remaining }, opId });
@@ -314,7 +372,7 @@ export async function setSemuaHadir(actor: Session, eventKepId: string, subEvent
 
 /** Latest pertemuan date (YYYY-MM-DD) of the KEP, or null when it has none. */
 async function meetingsOf(ctx: Ctx): Promise<{ id: string; tanggal: string }[]> {
-  const subs = await listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.tanggal] });
+  const subs = await subEventsOf(ctx);
   return subs.filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e))).map((s) => ({ id: s.id, tanggal: day(s.fields[F.subEvent.tanggal]) })).filter((m) => m.tanggal);
 }
 async function lastMeetingDate(ctx: Ctx): Promise<string | null> {
@@ -326,7 +384,7 @@ export type Pertemuan = { id: string; agenda: string; tanggal: string; urutan: n
 /** Pertemuan of the KEP, oldest first, plus today's WIB date (for choosing the default one). */
 export async function listPertemuan(actor: Session, eventKepId: string): Promise<{ items: Pertemuan[]; today: string }> {
   const ctx = await scope(actor, eventKepId);
-  const subs = await listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan] });
+  const subs = await subEventsOf(ctx);
   const items = subs
     .filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e)))
     .map((s) => ({ id: s.id, agenda: str(s.fields[F.subEvent.agenda]), tanggal: day(s.fields[F.subEvent.tanggal]), urutan: Number(s.fields[F.subEvent.urutan]) || 0 }))
@@ -411,6 +469,7 @@ async function setKeterangan(
       throw e;
     } finally {
       invalidateKepCache();
+      invalidateTable(T.pendaftaranEvents);
     }
   });
 }

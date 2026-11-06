@@ -70,7 +70,7 @@ export default function ImportClient({ kepId }: { kepId: string }) {
               setError(null);
             }}
           />
-          <span className={styles.hint}>Maksimal 2 MB dan 500 baris.</span>
+          <span className={styles.hint}>Maksimal 2 MB dan 100 baris. Lebih dari itu: bagi menjadi beberapa berkas.</span>
         </label>
         <button className={styles.button} type="submit" disabled={!file || busy !== null}>
           {busy === "preview" ? "Memeriksa..." : "Periksa berkas"}

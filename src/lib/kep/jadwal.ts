@@ -22,9 +22,9 @@ export const TERKUNCI = "Jadwal pewarta terkunci setelah disetujui";
  * PIC of the owning paroki (Admin Paroki 403, other parish 404) while the KEP is Diajukan only: after approval the PIC could
  * otherwise toggle an assignment to unlock a pewarta's phone number. SEP may edit any KEP that is not Ditolak (audited with its role).
  */
-async function scope(actor: Session, eventKepId: string) {
+async function scope(actor: Session, eventKepId: string, fresh = false) {
   requireRole(actor, ["PIC", "SEP"]);
-  const { eventKep } = await assertKepInScope(actor, eventKepId);
+  const { eventKep } = await assertKepInScope(actor, eventKepId, { fresh });
   const status = str(eventKep.fields[F.eventKep.statusPersetujuan]);
   return { eventIds: ids(eventKep.fields[F.eventKep.events]), terkunci: actor.role === "SEP" ? status === "Ditolak" : status !== "Diajukan" };
 }
@@ -76,7 +76,7 @@ async function markers(subEventId: string): Promise<{ aksi: string; m: Marker }[
  * this KEP's events (ids from URL/body are never trusted). Audit first (abort when it fails), idempotent per opId.
  */
 export async function assignPengajar(actor: Session, eventKepId: string, subEventId: string, pengajarIds: string[], opId: string): Promise<{ pengajarIds: string[] }> {
-  const { eventIds, terkunci } = await scope(actor, eventKepId);
+  const { eventIds, terkunci } = await scope(actor, eventKepId, true); // the lock depends on the status: fresh read
   if (terkunci) throw new HttpError(409, TERKUNCI);
   if (typeof opId !== "string" || !OP_ID.test(opId)) throw new HttpError(422, "opId tidak valid");
   // Scope-checked fetch (404 for foreign / malformed / unknown), then it must hang under THIS KEP's events.

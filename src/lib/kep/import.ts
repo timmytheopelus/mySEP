@@ -7,7 +7,11 @@ import { neutralize } from "@/lib/security/csv";
 import { PesertaInput } from "@/lib/kep/registration";
 
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
-export const MAX_ROWS = 500;
+/**
+ * 100 data rows per file: a commit costs at most ~7 Airtable calls per row on a warm cache (see the commit route),
+ * so 100 rows is ~700 calls, ~175 s at the 4 req/s process throttle, inside maxDuration 300.
+ */
+export const MAX_ROWS = 100;
 const MAX_UNCOMPRESSED = 20 * 1024 * 1024;
 const MAX_ENTRIES = 200;
 const MAX_ENTRY_BYTES = 15 * 1024 * 1024;
@@ -53,7 +57,7 @@ const EXAMPLE: Record<Col, string> = {
   "Persetujuan Data Kesehatan": "tidak",
 };
 const PHONE_COLS: Col[] = ["Nomor WhatsApp", "Kontak Darurat", "Pendukung Doa 1 Kontak", "Pendukung Doa 2 Kontak"];
-const MAX_SHEET_ROWS = 600;
+const MAX_SHEET_ROWS = 200; // data rows + blank rows / example row headroom
 const MAX_SHEET_COLS = 60;
 
 export async function buildTemplateXlsx(opts: { parokiNames?: string[] } = {}): Promise<Buffer> {
@@ -83,7 +87,7 @@ export async function buildTemplateXlsx(opts: { parokiNames?: string[] } = {}): 
   const help = wb.addWorksheet("Petunjuk");
   [
     "Isi data mulai baris 2 pada lembar Peserta. Hapus atau ganti baris CONTOH.",
-    "Maksimal 500 baris, ukuran berkas maksimal 2 MB, format .xlsx tanpa makro.",
+    `Maksimal ${MAX_ROWS} baris, ukuran berkas maksimal 2 MB, format .xlsx tanpa makro.`,
     "Tanggal Lahir: YYYY-MM-DD (contoh 1985-04-12). Nomor WhatsApp: awali dengan 0 atau 62.",
     "Paroki Asal: tulis nama paroki persis seperti pada lembar Daftar Paroki.",
     "Dua pendukung doa wajib diisi (nama dan kontak).",
