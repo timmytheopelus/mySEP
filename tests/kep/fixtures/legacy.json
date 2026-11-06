@@ -1,0 +1,370 @@
+{
+ "paroki": [
+  {
+   "id": "recPARLAUR0000001",
+   "f": {
+    "nama": "St. Laurentius"
+   }
+  },
+  {
+   "id": "recPARPANDU0000001",
+   "f": {
+    "nama": "Paroki Pandu"
+   }
+  },
+  {
+   "id": "recPARZZ000000001",
+   "f": {
+    "nama": "Paroki ZZ"
+   }
+  }
+ ],
+ "penyelenggaraKep": [
+  {
+   "id": "recORGLAUR0000001",
+   "f": {
+    "paroki": [
+     "recPARLAUR0000001"
+    ]
+   }
+  },
+  {
+   "id": "recORGPANDU000001",
+   "f": {
+    "paroki": [
+     "recPARPANDU0000001"
+    ]
+   }
+  },
+  {
+   "id": "recORGZZ00000001",
+   "f": {
+    "paroki": [
+     "recPARZZ000000001"
+    ]
+   }
+  }
+ ],
+ "events": [
+  {
+   "id": "recEVLAUR18A00001",
+   "f": {
+    "namaAcara": "KEP PAROKI ST. LAURENTIUS ANGKATAN 18",
+    "kelompokAcara": "KEP",
+    "tanggalAcara": "2024-02-01"
+   }
+  },
+  {
+   "id": "recEVLAUR18B00001",
+   "f": {
+    "namaAcara": "St. Laurentius Angkatan 18",
+    "kelompokAcara": "KEP",
+    "tanggalAcara": "2024-02-01"
+   }
+  },
+  {
+   "id": "recEVPANDU900001",
+   "f": {
+    "namaAcara": "Paroki Pandu Angkatan 9",
+    "kelompokAcara": "KEP",
+    "tanggalAcara": "2023-09-10"
+   }
+  },
+  {
+   "id": "recEVKATEDRAL0001",
+   "f": {
+    "namaAcara": "KEP PAROKI KATEDRAL ANGKATAN 3",
+    "kelompokAcara": "KEP",
+    "tanggalAcara": "2022-05-05"
+   }
+  },
+  {
+   "id": "recEVPEMBEKALAN01",
+   "f": {
+    "namaAcara": "Pembekalan Pengajar KEP",
+    "kelompokAcara": "KEP"
+   }
+  },
+  {
+   "id": "recEVBINALANJUT01",
+   "f": {
+    "namaAcara": "Bina Lanjut KEP",
+    "kelompokAcara": "KEP"
+   }
+  },
+  {
+   "id": "recEVRETRET00001",
+   "f": {
+    "namaAcara": "KEP PAROKI RETRET ANGKATAN 1",
+    "kelompokAcara": "Retret"
+   }
+  },
+  {
+   "id": "recEVZZ0000000001",
+   "f": {
+    "namaAcara": "KEP PAROKI ZZ ANGKATAN 1",
+    "kelompokAcara": "KEP",
+    "tanggalAcara": "2025-01-01"
+   }
+  }
+ ],
+ "eventKep": [
+  {
+   "id": "recKEPLAUR18A0001",
+   "f": {
+    "events": [
+     "recEVLAUR18A00001"
+    ],
+    "penyelenggara": [
+     "recORGLAUR0000001"
+    ],
+    "statusPersetujuan": "Disetujui"
+   }
+  },
+  {
+   "id": "recKEPLAUR18B0001",
+   "f": {
+    "events": [
+     "recEVLAUR18B00001"
+    ],
+    "penyelenggara": [
+     "recORGLAUR0000001"
+    ],
+    "statusPersetujuan": "Disetujui"
+   }
+  },
+  {
+   "id": "recKEPPANDU900001",
+   "f": {
+    "events": [
+     "recEVPANDU900001"
+    ],
+    "penyelenggara": [
+     "recORGPANDU000001"
+    ]
+   }
+  },
+  {
+   "id": "recKEPZZ000000001",
+   "f": {
+    "events": [
+     "recEVZZ0000000001"
+    ],
+    "penyelenggara": [
+     "recORGZZ00000001"
+    ],
+    "statusPersetujuan": "Ditolak"
+   }
+  }
+ ],
+ "teamUmat": [
+  {
+   "id": "recTU1000000000001",
+   "f": {
+    "namaLengkap": "Budi Santoso",
+    "noWhatsapp": "0812-3456-789"
+   }
+  },
+  {
+   "id": "recTU1B00000000001",
+   "f": {
+    "namaLengkap": "Budi S.",
+    "noWhatsapp": "+62 812 3456 789",
+    "email": "Budi@Mail.com"
+   }
+  },
+  {
+   "id": "recTU2000000000001",
+   "f": {
+    "namaLengkap": "Siti",
+    "email": "siti@mail.com"
+   }
+  },
+  {
+   "id": "recTU3000000000001",
+   "f": {
+    "namaLengkap": "Agus",
+    "noWhatsapp": "081111111111"
+   }
+  },
+  {
+   "id": "recTU4000000000001",
+   "f": {
+    "namaLengkap": "Maria",
+    "noWhatsapp": "082222222222"
+   }
+  },
+  {
+   "id": "recTU5000000000001",
+   "f": {
+    "namaLengkap": "Yohanes",
+    "noWhatsapp": "083333333333"
+   }
+  },
+  {
+   "id": "recTU6000000000001",
+   "f": {
+    "namaLengkap": "Tomas",
+    "noWhatsapp": "084444444444"
+   }
+  },
+  {
+   "id": "recTU7000000000001",
+   "f": {
+    "namaLengkap": "Panitia Ana",
+    "noWhatsapp": "085555555555"
+   }
+  },
+  {
+   "id": "recTU8000000000001",
+   "f": {
+    "namaLengkap": "Batal Bo",
+    "noWhatsapp": "086666666666"
+   }
+  }
+ ],
+ "pendaftaranEvents": [
+  {
+   "id": "recPS01000000000001",
+   "f": {
+    "event": [
+     "recEVLAUR18B00001"
+    ],
+    "teamUmat": [
+     "recTU1000000000001"
+    ],
+    "statusPendaftaran": "Daftar",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS"
+   }
+  },
+  {
+   "id": "recPS02000000000001",
+   "f": {
+    "event": [
+     "recEVLAUR18B00001"
+    ],
+    "teamUmat": [
+     "recTU2000000000001"
+    ],
+    "statusPendaftaran": "Confirmed",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "TIDAK LULUS"
+   }
+  },
+  {
+   "id": "recPS03000000000001",
+   "f": {
+    "event": [
+     "recEVLAUR18B00001"
+    ],
+    "teamUmat": [
+     "recTU1B00000000001"
+    ],
+    "statusPendaftaran": "Confirmed",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS"
+   }
+  },
+  {
+   "id": "recPS04000000000001",
+   "f": {
+    "event": [
+     "recEVLAUR18B00001"
+    ],
+    "teamUmat": [
+     "recTU7000000000001"
+    ],
+    "statusPendaftaran": "Daftar",
+    "kategoriKepesertaan": "Panitia"
+   }
+  },
+  {
+   "id": "recPS05000000000001",
+   "f": {
+    "event": [
+     "recEVLAUR18B00001"
+    ],
+    "teamUmat": [
+     "recTU8000000000001"
+    ],
+    "statusPendaftaran": "Batal",
+    "kategoriKepesertaan": "Peserta"
+   }
+  },
+  {
+   "id": "recPS06000000000001",
+   "f": {
+    "event": [
+     "recEVLAUR18A00001"
+    ],
+    "teamUmat": [
+     "recTU3000000000001"
+    ],
+    "statusPendaftaran": "Daftar",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS"
+   }
+  },
+  {
+   "id": "recPS07000000000001",
+   "f": {
+    "event": [
+     "recEVPANDU900001"
+    ],
+    "teamUmat": [
+     "recTU4000000000001"
+    ],
+    "statusPendaftaran": "Paid & Confirm",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS",
+    "riwayatPenyakit": "Asma",
+    "riwayatAlergi": "Udang",
+    "obatRutin": "Ventolin",
+    "kontakDarurat": "Ibu 0899"
+   }
+  },
+  {
+   "id": "recPS08000000000001",
+   "f": {
+    "event": [
+     "recEVKATEDRAL0001"
+    ],
+    "teamUmat": [
+     "recTU5000000000001"
+    ],
+    "statusPendaftaran": "Daftar",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS"
+   }
+  },
+  {
+   "id": "recPS09000000000001",
+   "f": {
+    "event": [
+     "recEVZZ0000000001"
+    ],
+    "teamUmat": [
+     "recTU6000000000001"
+    ],
+    "statusPendaftaran": "Daftar",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS"
+   }
+  },
+  {
+   "id": "recPS10000000000001",
+   "f": {
+    "event": [
+     "recEVPEMBEKALAN01"
+    ],
+    "teamUmat": [
+     "recTU3000000000001"
+    ],
+    "statusPendaftaran": "Daftar",
+    "kategoriKepesertaan": "Peserta",
+    "keterangan": "LULUS"
+   }
+  }
+ ]
+}
