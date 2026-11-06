@@ -180,7 +180,8 @@ describe("listPesertaView", () => {
   it("collapses the same person (same WA) in one event", async () => {
     const rows = await listPesertaView(sep);
     const inB = rows.filter((r) => r.eventId === "recEVLAUR18B00001" && r.kategori === "Peserta");
-    expect(inB).toHaveLength(2);
+    expect(inB.filter((r) => r.statusPendaftaran !== "Batal")).toHaveLength(2);
+    expect(inB.filter((r) => r.keterangan === "LULUS")).toHaveLength(1);
   });
   it("limits to an eventKep when given", async () => {
     const rows = await listPesertaView(sep, "recKEPPANDU900001");
