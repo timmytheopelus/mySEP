@@ -7,7 +7,7 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 
 import { listRecords } from "@/lib/airtable/client";
 import { invalidateKepCache } from "@/lib/kep/readModel";
-import { kehadiranPerPertemuan, profilPeserta, rekapAngkatan, toCsv, trenTahunan } from "@/lib/kep/reports";
+import { kehadiranPerPertemuan, kepDashboard, profilPeserta, rekapAngkatan, suppressDim, toCsv, trenTahunan } from "@/lib/kep/reports";
 import { GET } from "@/app/api/laporan/[jenis]/route";
 import { SESSION_COOKIE, clearSessionCache, issueSession, type Session } from "@/lib/auth/session";
 import { resetRateLimitMemory } from "@/lib/ratelimit";
@@ -71,8 +71,8 @@ beforeEach(async () => {
     ev(EV_B, "KEP PAROKI Katedral Angkatan 1", "2025-04-01"),
     ev(EV_L, "KEP PAROKI Lama Angkatan 4", "2020-01-01"),
   ];
-  const kep = (id: string, e: string, org: string, st = "Disetujui") => ({ id, fields: { [F.eventKep.events]: [e], [F.eventKep.penyelenggara]: [org], [F.eventKep.statusPersetujuan]: st } });
-  store[T.eventKep] = [kep(KEP_A1, EV_A1, "recORGA0000000001"), kep(KEP_A2, EV_A2, "recORGA0000000001"), kep(KEP_B, EV_B, "recORGB0000000001")];
+  const kep = (id: string, e: string, org: string, st = "Disetujui", end?: string) => ({ id, fields: { [F.eventKep.events]: [e], [F.eventKep.penyelenggara]: [org], [F.eventKep.statusPersetujuan]: st, ...(end ? { [F.eventKep.tanggalSelesai]: end } : {}) } });
+  store[T.eventKep] = [kep(KEP_A1, EV_A1, "recORGA0000000001", "Disetujui", "2024-06-01"), kep(KEP_A2, EV_A2, "recORGA0000000001"), kep(KEP_B, EV_B, "recORGB0000000001")];
   const sub = (id: string, ev: string, n: number, tgl: string, agenda = `Pertemuan ${n}`) => ({ id, fields: { [F.subEvent.acara]: [ev], [F.subEvent.agenda]: agenda, [F.subEvent.urutan]: n, [F.subEvent.tanggal]: tgl } });
   store[T.subEvent] = [sub(S1, EV_A1, 1, "2024-03-01"), sub(S2, EV_A1, 2, "2024-03-08"), sub(S3, EV_A1, 3, "2024-03-15", "=HYPERLINK(evil)")];
   store[T.teamUmat] = [];
@@ -181,30 +181,82 @@ describe("kehadiranPerPertemuan", () => {
   });
 });
 
+describe("suppressDim", () => {
+  const ORD = ["Menikah", "Lajang", "Duda", "Janda"];
+  it("hides small AND zero cells as '<5', complementary cells as '*' until the hidden sum is >= 5 over >= 2 cells", () => {
+    // 1/1 cannot be recovered: Duda and Janda hidden (sum 2) -> smallest visible (Lajang) is hidden as well
+    expect(suppressDim({ Menikah: 30, Lajang: 10, Duda: 1, Janda: 1 }, ORD)).toEqual({ Menikah: 30, Lajang: "*", Duda: "<5", Janda: "<5" });
+    // hidden sum 5 over two cells: nothing more to hide
+    expect(suppressDim({ Menikah: 30, Lajang: 10, Duda: 2, Janda: 3 }, ORD)).toEqual({ Menikah: 30, Lajang: 10, Duda: "<5", Janda: "<5" });
+  });
+  it("single hidden cell: the next smallest is hidden too (ties: fixed order)", () => {
+    expect(suppressDim({ A: 3, B: 20, C: 20 }, ["A", "B", "C"])).toEqual({ A: "<5", B: "*", C: 20 });
+  });
+  it("a zero cell counts as small, so presence never implies >= 1", () => {
+    expect(suppressDim({ A: 0, B: 25, C: 30 }, ["A", "B", "C"])).toEqual({ A: "<5", B: "*", C: 30 });
+  });
+  it("hides everything when nothing visible remains; keeps all fixed keys", () => {
+    expect(suppressDim({ A: 2, B: 1 }, ["A", "B"])).toEqual({ A: "<5", B: "<5" });
+    expect(Object.keys(suppressDim({ A: 9, B: 9 }, ["A", "B", "C"]))).toEqual(["A", "B", "C"]);
+  });
+  it("shows nothing but numbers >= 5 when no cell is small", () => {
+    expect(suppressDim({ A: 5, B: 7 }, ["A", "B"])).toEqual({ A: 5, B: 7 });
+  });
+});
+
 describe("profilPeserta", () => {
-  it("aggregates only, suppresses buckets < 5 and the complementary one", async () => {
-    // 13 distinct counted peserta in Pandu (11 in angkatan 1 + 2 in angkatan 2): assign demographics
+  it("fixed category lists; small, zero and complementary cells; no names/contact/health", async () => {
     const counted = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15];
     counted.forEach((n, i) => {
       const f = store[T.teamUmat].find((t) => t.id === tid(n))!.fields;
-      f[U.jenisKelamin] = i < 8 ? "Perempuan" : "Laki-laki"; // 8 / 5: nothing suppressed
-      f[U.statusPernikahan] = i < 7 ? "Menikah" : i < 12 ? "Lajang" : "Duda"; // 7 / 5 / 1: Duda + next smallest (Lajang)
-      f[U.tanggalLahir] = i < 6 ? `${yr - 35}-01-01` : i < 12 ? `${yr - 45}-01-01` : `${yr - 65}-01-01`; // 6 / 6 / 1
+      f[U.jenisKelamin] = i < 8 ? "Perempuan" : "Laki-laki";
+      f[U.statusPernikahan] = i < 7 ? "Menikah" : i < 12 ? "Lajang" : "Duda";
+      f[U.tanggalLahir] = i < 6 ? `${yr - 35}-01-01` : i < 12 ? `${yr - 45}-01-01` : `${yr - 65}-01-01`;
     });
     invalidateKepCache();
     const p = await profilPeserta({ parokiId: PA });
-    expect(p.jenisKelamin).toEqual({ Perempuan: 8, "Laki-laki": 5 });
-    expect(p.statusPernikahan).toEqual({ Menikah: 7, Lajang: "<5", Duda: "<5" });
-    expect(p.kelompokUsia["60+"]).toBe("<5");
-    expect(p.kelompokUsia["30-39"]).toBe("<5"); // complementary (first of the tied smallest)
-    expect(p.kelompokUsia["40-49"]).toBe(6);
+    if (p.suppressed) throw new Error("not expected");
+    expect(p.kelompokUsia).toEqual({ "<20": "<5", "20-29": "<5", "30-39": "*", "40-49": 6, "50-59": "<5", "60+": "<5", "Tidak diketahui": "<5" });
+    expect(p.jenisKelamin).toEqual({ "Laki-laki": "*", Perempuan: 8, "Tidak diketahui": "<5" });
+    expect(p.statusPernikahan).toEqual({ Lajang: "*", Menikah: 7, Duda: "<5", Janda: "<5", Lainnya: "<5", "Tidak diketahui": "<5" });
     const s = JSON.stringify(p);
     for (const leak of ["Rahasia", "0812", "@rahasia", "KANKER"]) expect(s).not.toContain(leak);
   });
-  it("never leaks counts of 1-4 as numbers", async () => {
+  it("whole profile is withheld when fewer than 10 people", async () => {
+    expect(await profilPeserta({ parokiId: PB })).toEqual({ suppressed: true });
+  });
+  it("never leaks counts of 0-4 as numbers", async () => {
     const p = await profilPeserta({ parokiId: "ALL" });
+    if (p.suppressed) throw new Error("not expected");
     for (const dim of [p.kelompokUsia, p.jenisKelamin, p.statusPernikahan])
-      for (const v of Object.values(dim)) expect(typeof v === "number" ? v === 0 || v >= 5 : v === "<5").toBe(true);
+      for (const v of Object.values(dim)) expect(typeof v === "number" ? v >= 5 : v === "<5" || v === "*").toBe(true);
+  });
+});
+
+describe("kepDashboard + read volume", () => {
+  it("KEP aktif = Disetujui and not past Tanggal Selesai (WIB); disetujui counted separately", async () => {
+    const d = await kepDashboard({ parokiId: PA });
+    expect(d.disetujui).toBe(2);
+    expect(d.aktif).toBe(1);
+    expect(d.kehadiran.map((k) => k.id).sort()).toEqual([KEP_A1, KEP_A2].sort());
+    expect(JSON.stringify(d)).not.toMatch(/Katedral|Rahasia/);
+  });
+  it("a whole dashboard view reads each table once when cold and nothing when warm", async () => {
+    const view = () => Promise.all([rekapAngkatan({ parokiId: PA }), trenTahunan({ parokiId: PA }), profilPeserta({ parokiId: PA }), kepDashboard({ parokiId: PA })]);
+    await view();
+    const cold = vi.mocked(listRecords).mock.calls.length;
+    expect(cold).toBeLessThanOrEqual(6);
+    vi.mocked(listRecords).mockClear();
+    await view();
+    expect(vi.mocked(listRecords).mock.calls.length).toBe(0);
+  });
+  it("AuditKEP is read with a formula on aksi and the mundur target ids, not as a whole table", async () => {
+    await kehadiranPerPertemuan(pic, KEP_A1);
+    const call = vi.mocked(listRecords).mock.calls.find((c) => c[0] === T.auditKep)!;
+    const f = (call[1] as { filterByFormula?: string }).filterByFormula ?? "";
+    expect(f).toContain("peserta_mundur");
+    expect(f).toContain(pid(8));
+    expect(f).toContain(pid(13));
   });
 });
 
@@ -213,6 +265,10 @@ describe("toCsv", () => {
     const out = toCsv([{ "=cmd": "a", b: "=1+1", c: "+x", d: '-y"z', e: "@w", f: "a,b", g: 5 }]);
     expect(out.split("\r\n")[0]).toBe("'=cmd,b,c,d,e,f,g");
     expect(out.split("\r\n")[1]).toBe(`a,'=1+1,'+x,"'-y""z",'@w,"a,b",5`);
+  });
+  it("keeps numbers raw (negative numbers are not formulas) and catches LF, leading space and full-width signs", () => {
+    const out = toCsv([{ a: -5, b: "\n=1", c: " =1", d: "＝1", e: "＋1" }]).split("\r\n");
+    expect(out[1]).toBe(`-5,"'\n=1",' =1,'＝1,'＋1`);
   });
   it("is empty for no rows", () => expect(toCsv([])).toBe(""));
 });
@@ -265,6 +321,7 @@ describe("GET /api/laporan/[jenis]", () => {
     expect(log).toBeTruthy();
     expect(log.fields[F.auditKep.targetId]).toBe("kehadiran");
     expect(JSON.stringify(log.fields)).not.toMatch(/Rahasia|Pertemuan/);
+    expect(JSON.parse(String(log.fields[F.auditKep.sesudah]))).toMatchObject({ jenis: "kehadiran", kepId: KEP_A1 });
   });
   it("json is no-store too, and a bad format is 422", async () => {
     expect((await get("tren", "", pic)).headers.get("cache-control")).toContain("no-store");

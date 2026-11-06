@@ -100,7 +100,7 @@ afterEach(() => {
 describe("neutralize", () => {
   it("prefixes formula starters and tab/CR with a single quote", () => {
     expect(neutralize('=HYPERLINK("http://x","y")')).toBe(`'=HYPERLINK("http://x","y")`);
-    for (const s of ["+1", "-1", "@SUM(A1)", "\tx", "\rx"]) expect(neutralize(s)).toBe(`'${s}`);
+    for (const s of ["+1", "-1", "@SUM(A1)", "\tx", "\rx", "\n=1", " =1", "\u00a0@x", "  -1", "＝1", "＋1", "－1", "＠x", " ＝1"]) expect(neutralize(s)).toBe(`'${s}`);
   });
   it("leaves ordinary text alone", () => {
     expect(neutralize("Maria Goreti")).toBe("Maria Goreti");

@@ -133,9 +133,8 @@ describe("POST /api/kep/[id]/subevent/[sid]/pengajar", () => {
     expect((await set([P1], pic, { status: "Disetujui" })).status).toBe(422);
     expect(linksOf(S1)).toBeUndefined();
   });
-  it("401 anonymous, 403 SEP, 403 cross-site", async () => {
+  it("401 anonymous, 403 cross-site", async () => {
     expect((await set([P1], null)).status).toBe(401);
-    expect((await set([P1], sep)).status).toBe(403);
     expect((await call({ pengajarIds: [P1], opId: "op-pengajar-0001" }, { as: pic, params: { id: KEP, sid: S1 }, headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403);
     expect(linksOf(S1)).toBeUndefined();
   });
@@ -200,14 +199,36 @@ describe("getJadwal", () => {
     expect(j.opsi.every((o) => Object.keys(o).sort().join() === "id,nama")).toBe(true);
     expect(JSON.stringify(j)).not.toMatch(/nohp|phone|\b0?8\d{8}|\b628/i);
   });
-  it("404 for another parish, 403 for SEP and ADMIN", async () => {
+  it("404 for another parish, 403 for ADMIN", async () => {
     await expect(getJadwal(picB, KEP)).rejects.toMatchObject({ status: 404 });
-    await expect(getJadwal(sep, KEP)).rejects.toMatchObject({ status: 403 });
     await expect(getJadwal(admA, KEP)).rejects.toMatchObject({ status: 403 });
   });
   it("reports whether the schedule is locked (anything but Diajukan) and stays readable", async () => {
     expect((await getJadwal(pic, KEP)).terkunci).toBe(false);
     expect((await getJadwal(pic, KEP_L)).terkunci).toBe(true);
     expect((await getJadwal(pic, KEP_X)).terkunci).toBe(true);
+  });
+});
+
+describe("SEP assigns pewarta after approval", () => {
+  it("SEP may set pewarta on an approved KEP (PIC stays locked), audited with the actor role", async () => {
+    expect((await set([P1], pic, {}, { id: KEP_L, sid: SL })).status).toBe(409);
+    const r = await set([P1, P2], sep, {}, { id: KEP_L, sid: SL });
+    expect(r.status).toBe(200);
+    expect(linksOf(SL)).toEqual([P1, P2]);
+    const a = auditOf("pengajar_set")[0];
+    expect(a.fields[AU.pelaku]).toBe("sepa@x.id");
+    expect(JSON.parse(String(a.fields[AU.sesudah]))).toMatchObject({ role: "SEP", kepId: KEP_L });
+  });
+  it("SEP may also edit while Diajukan; a rejected KEP stays locked (409); ADMIN stays 403", async () => {
+    expect((await set([P1], sep)).status).toBe(200);
+    expect((await set([P1], sep, {}, { id: KEP_X, sid: SX })).status).toBe(409);
+    expect((await set([P1], admA, {}, { id: KEP_L, sid: SL })).status).toBe(403);
+  });
+  it("SEP reads an editable jadwal of an approved KEP; the PIC's stays locked", async () => {
+    expect((await getJadwal(sep, KEP_L)).terkunci).toBe(false);
+    expect((await getJadwal(sep, KEP_X)).terkunci).toBe(true);
+    expect((await getJadwal(pic, KEP_L)).terkunci).toBe(true);
+    expect((await getJadwal(sep, KEP_B)).pertemuan.length).toBeGreaterThanOrEqual(0);
   });
 });
