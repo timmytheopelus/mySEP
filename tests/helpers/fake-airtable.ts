@@ -5,6 +5,7 @@ import { encryptSecret } from "@/lib/auth/totp";
 import { resetReadCache } from "@/lib/airtable/cacheStore";
 
 type Row = { id: string; fields: Record<string, unknown> };
+const EMAIL_FIELD = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const store: Record<string, Row[]> = {};
 
 /** In-memory stand-in for the Airtable client (the real base is never touched). */
@@ -17,6 +18,13 @@ export function fakeClientModule() {
       return structuredClone(row);
     }),
     createRecords: vi.fn(async (table: string, rows: Record<string, unknown>[]) => {
+      // Like Airtable: AuditKEP.Pelaku is an email field; anything else is refused (final fix I5).
+      if (table === T.auditKep)
+        for (const r of rows) {
+          const v = r[F.auditKep.pelaku];
+          if (v !== undefined && !(typeof v === "string" && EMAIL_FIELD.test(v)))
+            throw new Error("Airtable request failed: HTTP 422 (INVALID_VALUE_FOR_COLUMN: Pelaku)");
+        }
       const out = rows.map((fields, i) => ({ id: `recNEW${(store[table] ?? []).length + i}`.padEnd(17, "0"), fields: structuredClone(fields) }));
       (store[table] ??= []).push(...out);
       return structuredClone(out);

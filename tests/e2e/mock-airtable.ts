@@ -64,6 +64,14 @@ createServer(async (req, res) => {
   }
   if (req.method === "PATCH" || req.method === "POST") {
     const body = await readJson(req);
+    // Like Airtable: AuditKEP.Pelaku is an email field and refuses anything else (final fix I5).
+    if (table === T.auditKep) {
+      for (const rec of body.records ?? []) {
+        const v = rec.fields?.[F.auditKep.pelaku];
+        if (v !== undefined && !(typeof v === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)))
+          return send(res, 422, { error: { type: "INVALID_VALUE_FOR_COLUMN", message: "Field Pelaku cannot accept the provided value" } });
+      }
+    }
     const out = [];
     for (const rec of body.records ?? []) {
       if (req.method === "POST") {
