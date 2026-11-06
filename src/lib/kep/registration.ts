@@ -5,6 +5,7 @@ import { createRecords, getRecord, listRecords, updateRecords, type AtRecord } f
 import { EVENT_ID_FIELD, F, PENDAFTARAN_CREATED, T, TEAM_UMAT_CREATED, TEAM_UMAT_HAPUS, TEAM_UMAT_MENINGGAL, pickPublicRegistration } from "@/lib/airtable/schema";
 import { logAudit } from "@/lib/audit/log";
 import { mailConfigured, sendMail } from "@/lib/email";
+import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { invalidateKepCache, normEmail, normPhone } from "@/lib/kep/readModel";
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
@@ -423,6 +424,16 @@ export async function registerPeserta(
   };
   const send = async () => {
     if (!to) return false;
+    // Mail-bomb guard on the RECIPIENT (the address on file may be someone else's): over the limit, skip silently.
+    const lim = await rateLimit(limitKey("daftar-mail-penerima", to), 3, 3600);
+    if (!lim.ok) {
+      try {
+        await logAudit({ actorEmail: opts.actorEmail ?? "publik", action: "email_konfirmasi_dilewati", targetId: out.id, after: { alasan: "batas penerima" } });
+      } catch {
+        /* soft */
+      }
+      return false;
+    }
     try {
       await sendMail(to, "pendaftaran_kep", data);
       return mailConfigured();

@@ -12,5 +12,12 @@ export function validationError(err: ZodError): Response {
   return json({ error: "Data tidak valid. Periksa isian yang ditandai.", fields }, 422);
 }
 
+export const DEFAULT_FLOOR_MS = 6000;
+/** REG_MIN_RESPONSE_MS -> ms; empty, garbage, zero or negative fall back to the default. */
+export function responseFloorMs(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_FLOOR_MS;
+}
+
 /** Same body for an invalid token, an unknown event and a KEP that is not (or no longer) open. */
 export const notAvailable = () => json({ error: "Pendaftaran tidak tersedia" }, 404);

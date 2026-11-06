@@ -1,7 +1,7 @@
 import { runInBackground } from "@/lib/background";
 import { guardPost, clientIp, json, readBody, serverError, tooMany } from "@/lib/http/auth-http";
 import { HttpError } from "@/lib/http/errors";
-import { notAvailable, validationError } from "@/lib/http/registration-http";
+import { notAvailable, responseFloorMs, validationError } from "@/lib/http/registration-http";
 import { PesertaInput, RegistrationClosedError, RegistrationInputError, registerPeserta, verifyRegistrationToken } from "@/lib/kep/registration";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { verifyTurnstile } from "@/lib/security/turnstile";
@@ -12,7 +12,6 @@ const IP_LIMIT = 10; // registrations per hour per IP
 const EMAIL_LIMIT = 3; // per hour per email address (stops mail bombing a victim)
 const TOKEN_LIMIT = 300; // per hour per KEP link
 const HOUR = 3600;
-const DEFAULT_FLOOR_MS = 2500;
 
 /**
  * Public self-registration. The answer is the same for "registered" and "already_registered" (no enumeration of
@@ -46,9 +45,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ token: string 
     // Row creation happens before the response; email and non-critical audit rows run after it. A floor on the
     // response time evens out the registered / already_registered paths (no timing oracle).
     await registerPeserta(t.eventId, parsed.data, { actorEmail: "publik", defer: runInBackground });
-    const floor = Number(process.env.REG_MIN_RESPONSE_MS ?? DEFAULT_FLOOR_MS);
+    const floor = responseFloorMs(process.env.REG_MIN_RESPONSE_MS);
     const wait = floor - (Date.now() - started);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    else console.warn("Pendaftaran publik melebihi batas bawah waktu respons"); // no PII: timing may differ between paths
     return json({ ok: true, pesan: "Terima kasih, konfirmasi dikirim ke email Anda" });
   } catch (e) {
     if (e instanceof RegistrationClosedError) return notAvailable();

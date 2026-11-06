@@ -22,6 +22,7 @@ import { renderTemplate } from "@/lib/email/templates";
 import { setMailer } from "@/lib/email";
 import { SESSION_COOKIE, clearSessionCache, issueSession, type Session } from "@/lib/auth/session";
 import { resetRateLimitMemory } from "@/lib/ratelimit";
+import { responseFloorMs, DEFAULT_FLOOR_MS } from "@/lib/http/registration-http";
 import { flushBackground } from "@/lib/background";
 import { PUBLIC_REG_ALLOWED, TEAM_UMAT_HAPUS, TEAM_UMAT_MENINGGAL } from "@/lib/airtable/schema";
 import { POST as publicRoute } from "@/app/api/daftar/[token]/route";
@@ -120,7 +121,7 @@ beforeEach(async () => {
   vi.stubEnv("REG_TOKEN_SECRET", "r".repeat(48));
   vi.stubEnv("TURNSTILE_SECRET", "turnstile-secret");
   vi.stubEnv("APP_BASE_URL", "https://kep.example.org");
-  vi.stubEnv("REG_MIN_RESPONSE_MS", "0");
+  vi.stubEnv("REG_MIN_RESPONSE_MS", "1");
   resetStore();
   resetRateLimitMemory();
   clearSessionCache();
@@ -554,6 +555,19 @@ describe("M11 health consent", () => {
   it("no consent row when no health data is stored", async () => {
     await registerPeserta(EV, PesertaInput.parse(valid({ riwayatPenyakit: undefined, riwayatAlergi: undefined, obatRutin: undefined, persetujuanKesehatan: undefined })));
     expect((store[T.auditKep] ?? []).some((x) => x.fields[F.auditKep.aksi] === "persetujuan_data_kesehatan")).toBe(false);
+  });
+});
+
+describe("response floor parsing and recipient mail limit", () => {
+  it("empty, garbage, zero, negative -> default 6000; valid numbers are kept", () => {
+    expect(DEFAULT_FLOOR_MS).toBe(6000);
+    for (const v of [undefined, "", "abc", "0", "-5", "NaN", "Infinity"]) expect(responseFloorMs(v)).toBe(6000);
+    expect(responseFloorMs("250")).toBe(250);
+  });
+  it("at most 3 confirmation mails per hour to one recipient; the rest are skipped and audited", async () => {
+    for (let i = 0; i < 5; i++) await registerPeserta(EV, PesertaInput.parse(valid()));
+    expect(mails).toHaveLength(3);
+    expect((store[T.auditKep] ?? []).some((x) => x.fields[F.auditKep.aksi] === "email_konfirmasi_dilewati")).toBe(true);
   });
 });
 

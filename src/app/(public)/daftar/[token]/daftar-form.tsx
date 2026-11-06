@@ -40,6 +40,7 @@ export default function DaftarForm({ token, paroki, siteKey }: { token: string; 
   const [error, setError] = useState<string | null>(null);
   const [fields, setFields] = useState<Errors>({});
   const [hasHealth, setHasHealth] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const summary = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -115,6 +116,7 @@ export default function DaftarForm({ token, paroki, siteKey }: { token: string; 
     );
 
   const list = Object.values(fields);
+  const healthErr = HEALTH.concat("persetujuanKesehatan").some((k) => fields[k]);
   return (
     <form className={styles.form} onSubmit={submit} onInput={(e) => checkHealth(e.currentTarget)}>
       <div ref={summary} tabIndex={-1} className={styles.summary} hidden={!error}>
@@ -160,7 +162,7 @@ export default function DaftarForm({ token, paroki, siteKey }: { token: string; 
         <Field name="wa" label="Nomor WhatsApp" required hint="Nomor yang aktif di WhatsApp." errors={fields}>
           {(a) => <input {...a} className={styles.input} name="wa" type="tel" inputMode="tel" autoComplete="tel" required maxLength={40} placeholder="0812 3456 789" />}
         </Field>
-        <Field name="email" label="Email" required hint="Konfirmasi pendaftaran dikirim ke email ini." errors={fields}>
+        <Field name="email" label="Email" required hint="Konfirmasi dikirim ke email yang terdaftar atas nama Anda." errors={fields}>
           {(a) => <input {...a} className={styles.input} name="email" type="email" inputMode="email" autoComplete="email" required maxLength={254} />}
         </Field>
         <Field name="alamat" label="Alamat tinggal" required errors={fields}>
@@ -210,7 +212,7 @@ export default function DaftarForm({ token, paroki, siteKey }: { token: string; 
         {fields.pendukungDoa ? <span className={styles.fieldError}>{fields.pendukungDoa}</span> : null}
       </fieldset>
 
-      <details className={styles.details}>
+      <details className={styles.details} open={detailsOpen || healthErr || undefined} onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
         <summary className={styles.summaryToggle}>Data kesehatan (opsional)</summary>
         <div className={styles.fieldset}>
           <Field name="riwayatPenyakit" label="Riwayat penyakit" errors={fields}>
