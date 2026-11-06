@@ -59,7 +59,8 @@ function toAccount(r: AtRecord): Account | null {
     email: normalizeEmail(email),
     nama: str(f[A.nama]) ?? "",
     role,
-    parokiId: Array.isArray(paroki) && typeof paroki[0] === "string" ? paroki[0] : null,
+    // Exactly one link, else null (misconfigured: guards answer 403; never pick "the first").
+    parokiId: Array.isArray(paroki) && paroki.length === 1 && typeof paroki[0] === "string" ? paroki[0] : null,
     passwordHash: str(f[A.hashPassword]),
     googleSub: str(f[A.idGoogle]),
     mfaSecretEnc: str(f[A.rahasiaMfa]),

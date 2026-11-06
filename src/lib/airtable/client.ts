@@ -88,13 +88,15 @@ async function writeChunks<I>(
   return out;
 }
 
-export function createRecords(tableId: string, rows: Record<string, unknown>[]): Promise<AtRecord[]> {
-  return writeChunks("POST", tableId, rows, (fields) => ({ fields: pickAllowed(tableId, fields) }));
+/** `extra` = restricted field IDs this call may write (see schema RESTRICTED); omit for request-derived data. */
+export function createRecords(tableId: string, rows: Record<string, unknown>[], extra?: Set<string>): Promise<AtRecord[]> {
+  return writeChunks("POST", tableId, rows, (fields) => ({ fields: pickAllowed(tableId, fields, extra) }));
 }
 
 export function updateRecords(
   tableId: string,
   rows: { id: string; fields: Record<string, unknown> }[],
+  extra?: Set<string>,
 ): Promise<AtRecord[]> {
-  return writeChunks("PATCH", tableId, rows, (r) => ({ id: r.id, fields: pickAllowed(tableId, r.fields) }));
+  return writeChunks("PATCH", tableId, rows, (r) => ({ id: r.id, fields: pickAllowed(tableId, r.fields, extra) }));
 }

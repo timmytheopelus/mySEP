@@ -106,22 +106,41 @@ export const F = {
 // Write allowlist: only explicitly known (non reverse-link) fields may be written.
 const setOf = (o: Record<string, string>) => new Set<string>(Object.values(o));
 
+// Restricted fields: never in the generic allowlist. Only SEP may write them (pickAllowedForRole), or
+// server code that sets them from trusted data (e.g. penyelenggara on create from session.parokiId)
+// by passing them explicitly as `extra` to the client. Never from request input.
+export const RESTRICTED: Record<string, Set<string>> = {
+  [T.eventKep]: new Set([F.eventKep.statusPersetujuan, F.eventKep.catatanSep, F.eventKep.penyelenggara]),
+  [T.penyelenggaraKep]: new Set([F.penyelenggaraKep.paroki]),
+};
+const without = (o: Record<string, string>, drop?: Set<string>) =>
+  new Set<string>(Object.values(o).filter((v) => !drop?.has(v)));
+
 export const ALLOWED: Record<string, Set<string>> = {
   [T.events]: setOf(F.events),
   [T.pendaftaranEvents]: setOf(F.pendaftaranEvents),
   [T.teamUmat]: setOf(F.teamUmat),
-  [T.eventKep]: setOf(F.eventKep),
-  [T.penyelenggaraKep]: setOf(F.penyelenggaraKep),
+  [T.eventKep]: without(F.eventKep, RESTRICTED[T.eventKep]),
+  [T.penyelenggaraKep]: without(F.penyelenggaraKep, RESTRICTED[T.penyelenggaraKep]),
   [T.pengajarKep]: setOf(F.pengajarKep),
   [T.subEvent]: setOf(F.subEvent),
   [T.akunKep]: setOf(F.akunKep),
   [T.auditKep]: setOf(F.auditKep),
 };
 
-export function pickAllowed(tableId: string, fields: Record<string, unknown>): Record<string, unknown> {
+/** `extra`: restricted field IDs the caller is explicitly allowed to write (see RESTRICTED). */
+export function pickAllowed(tableId: string, fields: Record<string, unknown>, extra?: Set<string>): Record<string, unknown> {
   const allowed = ALLOWED[tableId];
   const out: Record<string, unknown> = {};
   if (!allowed) return out;
-  for (const [k, v] of Object.entries(fields)) if (allowed.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(fields)) if (allowed.has(k) || extra?.has(k)) out[k] = v;
   return out;
 }
+
+/** Restricted fields a role may write on a table: SEP only. */
+export const restrictedFor = (tableId: string, role: string): Set<string> =>
+  role === "SEP" ? (RESTRICTED[tableId] ?? new Set<string>()) : new Set<string>();
+
+/** Field filter for request-derived data: restricted fields survive only for SEP. */
+export const pickAllowedForRole = (tableId: string, role: string, fields: Record<string, unknown>) =>
+  pickAllowed(tableId, fields, restrictedFor(tableId, role));

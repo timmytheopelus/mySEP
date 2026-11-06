@@ -46,7 +46,7 @@ export async function issueSession(
   const iat = nowS();
   const startedAt = opts.startedAt ?? iat;
   const exp = Math.min(iat + SESSION_TTL_S, startedAt + SESSION_MAX_S);
-  return new SignJWT({ email: session.email, role: session.role, pid: session.parokiId, sa: startedAt, amr: opts.amr ?? ["pwd"], pf })
+  return new SignJWT({ sa: startedAt, amr: opts.amr ?? ["pwd"], pf })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setSubject(session.accountId)

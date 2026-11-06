@@ -3,15 +3,12 @@ import { getRecord, listRecords, type AtRecord } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
 import { HttpError } from "@/lib/http/errors";
 import { guardPost, json, serverError, withCookies } from "@/lib/http/auth-http";
-import { renewSession, sessionCookie, type Role, type Session } from "@/lib/auth/session";
+import { SESSION_COOKIE, renewSession, sessionCookie, type Role, type Session } from "@/lib/auth/session";
 
 export { HttpError };
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-
-/** Escape a value for a double-quoted Airtable formula string (use if a formula must embed user input). */
-export const escapeFormulaString = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 async function authenticate(req: Request): Promise<{ session: Session; token: string }> {
   const r = await renewSession(req.headers.get("cookie") ?? "");
@@ -71,8 +68,10 @@ export async function assertKepInScope(
 async function kepOfEvent(session: Session, eventIds: string[]) {
   requireRole(session, ["SEP", "PIC", "ADMIN"]);
   const { kep, parokiOf } = await kepParokiMap();
-  const k = kep.find((x) => ids(x.fields[F.eventKep.events]).some((e) => eventIds.includes(e)));
-  if (!k || !inScope(session, parokiOf.get(k.id) ?? [])) throw new HttpError(404);
+  // Every KEP reachable from the record counts: PIC/ADMIN need ALL of them in their paroki (order independent).
+  const ks = kep.filter((x) => ids(x.fields[F.eventKep.events]).some((e) => eventIds.includes(e)));
+  if (ks.length === 0 || !ks.every((k) => inScope(session, parokiOf.get(k.id) ?? []))) throw new HttpError(404);
+  const k = ks[0];
   return { eventKep: k, parokiId: session.role === "SEP" ? (parokiOf.get(k.id)?.[0] ?? null) : session.parokiId };
 }
 
@@ -135,7 +134,9 @@ export function withAuth<P = Record<string, string>>(handler: Handler<P>, opts: 
       requireRole(session, opts.roles);
       const params = (await routeCtx?.params) ?? ({} as P);
       const res = await handler(req, { session, params });
-      return withCookies(res, [sessionCookie(token)]);
+      // A handler that set or cleared the session cookie (logout, password change) wins: no renewal then.
+      const touched = res.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=`));
+      return touched ? res : withCookies(res, [sessionCookie(token)]);
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message }, e.status);
       return serverError();
