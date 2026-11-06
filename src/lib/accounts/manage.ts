@@ -103,8 +103,9 @@ export async function createAccount(actor: Session, input: CreateInput, stepUp?:
   const nama = String(input?.nama ?? "").trim();
   if (!nama || nama.length > 120) throw new HttpError(422, "Nama wajib diisi");
   const { role, parokiId } = await validateRoleAndParoki(input?.role, input?.parokiId);
-  if (role === "SEP") await requireStepUp(actor, stepUp);
+  // Cheap refusals first, so a 409 never burns the step-up code (codes are single use per TOTP step).
   if ((await emailCount(email)) > 0) throw new HttpError(409, "Email sudah terdaftar");
+  if (role === "SEP") await requireStepUp(actor, stepUp);
   const unset = newUnsetMarker();
 
   // Request-derived fields go through the role allowlist; the password hash is never part of this write.

@@ -148,20 +148,25 @@ const revocationKey = (jti: string) => limitKey("session-revoked", jti);
 
 /**
  * Server-side logout: denylists this session id until its absolute end (start + 8 h). Renewals keep the
- * same id, so a copied token and every renewal of it die together. Returns false when no valid token or
- * the store could not be written.
+ * same id, so a copied token and every renewal of it die together.
+ * "none": no valid session token (nothing to revoke); "failed": the shared store did not confirm the write
+ * (the copied token stays valid until it expires, at most 15 min without renewal and 8 h in total).
  */
-export async function revokeSession(cookieHeader: string): Promise<boolean> {
+export async function revokeSession(cookieHeader: string): Promise<"revoked" | "none" | "failed"> {
   const token = getCookie(cookieHeader ?? "", SESSION_COOKIE);
-  if (!token) return false;
+  if (!token) return "none";
+  let jti: string, sa: number;
   try {
     const { payload } = await jwtVerify(token, secretKey(), { algorithms: ["HS256"], issuer: ISSUER, audience: AUD_SESSION, requiredClaims: REQUIRED });
-    if (!payload.jti || typeof payload.sa !== "number") return false;
-    const ttl = payload.sa + SESSION_MAX_S - nowS();
-    return ttl > 0 ? await revokeKey(revocationKey(payload.jti), ttl) : true;
+    if (!payload.jti || typeof payload.sa !== "number") return "none";
+    jti = payload.jti;
+    sa = payload.sa;
   } catch {
-    return false;
+    return "none";
   }
+  const ttl = sa + SESSION_MAX_S - nowS();
+  if (ttl <= 0) return "revoked";
+  return (await revokeKey(revocationKey(jti), ttl)) ? "revoked" : "failed";
 }
 
 /** What a still-valid session proves; used to re-issue the cookie after the user's own security change. */

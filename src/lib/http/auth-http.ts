@@ -16,9 +16,15 @@ export function tooMany(retryAfter: number): Response {
 }
 
 /**
- * CSRF / login-CSRF guard: JSON content type only, and a same-origin browser signal is required
- * (Sec-Fetch-Site and/or Origin must be present, and any present one must be same-origin).
- * Returns a Response to send back, or null when the request may proceed.
+ * CSRF / login-CSRF guard: JSON content type only (multipart for the Excel import routes), and a same-origin
+ * browser signal is required (Sec-Fetch-Site and/or Origin must be present, and any present one must be
+ * same-origin). Returns a Response to send back, or null when the request may proceed.
+ *
+ * Behind the real host: `new URL(req.url).origin` is the host the platform received (Vercel passes the public
+ * Host, so a custom domain and each *.vercel.app preview URL each compare against themselves). A browser on
+ * https://kep.example.org posting to https://kep.example.org passes; a page on any other origin, including a
+ * preview URL posting to production, is refused. If a reverse proxy in front of the app ever rewrites Host,
+ * this check refuses every POST (fails closed) until the proxy forwards the public Host.
  */
 export function guardPost(req: Request, opts: { multipart?: boolean } = {}): Response | null {
   const ct = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
@@ -31,12 +37,19 @@ export function guardPost(req: Request, opts: { multipart?: boolean } = {}): Res
   return null;
 }
 
+/**
+ * Client IP for rate limiting. TRUST ASSUMPTION: this is only correct on Vercel, whose edge overwrites
+ * X-Real-IP / X-Forwarded-For with the real client address (a client cannot spoof them there). On any other
+ * host (self-hosted `next start`, another proxy) these headers are client-controlled unless the proxy in front
+ * strips and re-sets them, so per-IP limits could be bypassed by rotating the header. Per-account, per-email and
+ * per-link limits do not depend on it. See docs/ops/runbook.md.
+ */
+export function clientIpFromHeaders(h: Headers): string {
+  return h.get("x-real-ip")?.trim() || h.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+}
+
 export function clientIp(req: Request): string {
-  return (
-    req.headers.get("x-real-ip")?.trim() ||
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown"
-  );
+  return clientIpFromHeaders(req.headers);
 }
 
 export function withCookies(res: Response, cookies: string[]): Response {

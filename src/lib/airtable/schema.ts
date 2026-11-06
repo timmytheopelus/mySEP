@@ -235,3 +235,22 @@ export function pickPublicRegistration(tableId: string, fields: Record<string, u
   for (const [k, v] of Object.entries(pickAllowed(tableId, fields))) if (allow.has(k)) out[k] = v;
   return out;
 }
+
+/**
+ * Read allowlist: the only field IDs the Airtable client may request or return, per table. Everything else in a
+ * response (e.g. TeamUmat BPK-board fields, personal data the app does not use) is stripped in the client before
+ * any caller sees it. Fields of tables that are not listed here can never be read.
+ */
+export const READ_ALLOWED: Record<string, Set<string>> = {
+  [T.events]: new Set([...Object.values(F.events), EVENT_ID_FIELD]),
+  [T.pendaftaranEvents]: new Set([...Object.values(F.pendaftaranEvents), PENDAFTARAN_CREATED]),
+  [T.teamUmat]: new Set([...Object.values(F.teamUmat), TEAM_UMAT_CREATED, TEAM_UMAT_HAPUS, TEAM_UMAT_MENINGGAL]),
+  [T.eventKep]: setOf(F.eventKep),
+  [T.babKep]: setOf(F.babKep),
+  [T.penyelenggaraKep]: setOf(F.penyelenggaraKep),
+  [T.pengajarKep]: new Set([...Object.values(F.pengajarKep), ...Object.values(PENGAJAR_READ)]),
+  [T.paroki]: setOf(F.paroki),
+  [T.subEvent]: setOf(F.subEvent),
+  [T.akunKep]: setOf(F.akunKep),
+  [T.auditKep]: setOf(F.auditKep),
+};

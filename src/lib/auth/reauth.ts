@@ -13,6 +13,10 @@ const WINDOW_S = 15 * 60;
  * Fresh proof of the second factor for a sensitive action by an already logged-in user.
  * Accounts with an authenticator (always SEP/PIC) need a current TOTP code, never just the password;
  * an Admin without MFA proves the password. Wrong answers count toward the shared lockout and a limiter.
+ * Known limit (accepted, see docs/ops/runbook.md): consumption is not atomic. The used TOTP step is saved after
+ * verification (Airtable has no conditional write), so two requests racing with the SAME fresh code can both
+ * pass. Bounded by the per-account limiter (5 / 15 min), the 30 s step and the fact that the racer must already
+ * hold the SEP session and the code. Callers run their cheap 409 checks before calling this.
  */
 export async function reauthenticate(acc: Account, input: { code?: unknown; password?: unknown }): Promise<boolean> {
   if (isLocked(acc.lockedUntil, new Date())) return false;

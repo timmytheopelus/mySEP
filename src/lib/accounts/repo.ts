@@ -140,16 +140,18 @@ export async function saveMfaEnrollment(id: string, secretEnc: string, totpStep:
 export const mfaRequired = (role: Role) => role === "SEP" || role === "PIC";
 
 /**
- * First Google login: writes the sub, appends an AuditKEP row (aksi google_bind; only the last 4 chars of
- * the sub), then re-reads the account and returns the sub that is actually stored so the caller can
- * detect a lost race. Any write error propagates (the login fails).
+ * First Google login: appends an AuditKEP row FIRST (aksi google_bind; only the last 4 chars of the sub), then
+ * writes the sub, then re-reads the account and returns the sub that is actually stored so the caller can
+ * detect a lost race. Audit-before-bind: a binding never exists without its audit row (a failed audit write
+ * binds nothing; a failed bind after the audit leaves only a harmless extra audit row). Any write error
+ * propagates (the login fails).
  */
 export async function bindGoogleSub(id: string, sub: string, email: string): Promise<string | null> {
-  await updateRecords(T.akunKep, [{ id, fields: { [A.idGoogle]: sub } }]);
   const AU = F.auditKep;
   await createRecords(T.auditKep, [
     { [AU.aksi]: "google_bind", [AU.pelaku]: email, [AU.targetId]: id, [AU.sesudah]: sub.slice(-4) },
   ]);
+  await updateRecords(T.akunKep, [{ id, fields: { [A.idGoogle]: sub } }]);
   return (await getAccountById(id))?.googleSub ?? null;
 }
 

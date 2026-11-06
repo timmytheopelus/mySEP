@@ -305,7 +305,7 @@ describe("rate limiting", () => {
   it("uses Upstash atomic INCR when configured", async () => {
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "http://upstash.local");
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "t");
-    const f = vi.fn(async (..._a: unknown[]) => Response.json([{ result: 1 }, { result: 1 }, { result: 900 }]));
+    const f = vi.fn<(...a: unknown[]) => Promise<Response>>(async () => Response.json([{ result: 1 }, { result: 1 }, { result: 900 }]));
     vi.stubGlobal("fetch", f);
     try {
       await seedAccount({ id: "recADMIN00000001", email: "a@x.id", peran: "Admin Paroki" });
