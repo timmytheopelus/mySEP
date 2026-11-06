@@ -272,6 +272,12 @@ describe("round 1 fixes", () => {
     expect(row(pic.accountId).fields[A.idGoogle]).toBeUndefined();
   });
 
+  it("a duplicate SEP email is refused 409 BEFORE the step-up code is consumed", async () => {
+    vi.mocked(reauthenticate).mockClear();
+    expect(await status(createAccount(sepA, { ...input, email: sepB.email, role: "SEP", parokiId: null }, STEP))).toBe(409);
+    expect(reauthenticate).not.toHaveBeenCalled();
+  });
+
   it("SEP-impacting actions need a fresh step-up from the acting SEP; PIC creation does not", async () => {
     const deny = () => vi.mocked(reauthenticate).mockResolvedValueOnce(false);
     deny();

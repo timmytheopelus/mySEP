@@ -486,6 +486,15 @@ describe("first-binding trust", () => {
     });
   });
 
+  it("the audit row is written BEFORE the binding: a failed audit write binds nothing", async () => {
+    await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
+    const mod = await import("@/lib/airtable/client");
+    vi.mocked(mod.createRecords).mockRejectedValueOnce(new Error("Airtable request failed: HTTP 503"));
+    const r = await run({ email: "budi@gmail.com", sub: "1234567890abcdef" }).catch(() => ({ ok: false }));
+    expect(r.ok).toBe(false);
+    expect(row("recADMIN00000001").fields[A.idGoogle]).toBeUndefined();
+  });
+
   it("concurrent first logins with different subs: at most one wins and it is the stored sub", async () => {
     await seedAccount({ id: "recADMIN00000001", email: "budi@gmail.com", peran: "Admin Paroki" });
     const rs = await Promise.all([

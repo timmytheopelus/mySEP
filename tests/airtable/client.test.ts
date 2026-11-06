@@ -122,3 +122,52 @@ describe("no delete", () => {
     expect(Object.keys(mod).filter((k) => /delete|destroy|remove/i.test(k))).toEqual([]);
   });
 });
+
+describe("hardening (Task 19)", () => {
+  it("never issues an HTTP DELETE, whatever exported function is called", async () => {
+    fetchMock.mockImplementation(async (_u: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(init.body as string) : null;
+      return json(body ? { records: body.records.map((r: { id?: string }) => ({ id: r.id ?? "recN", fields: {} })) } : { id: "recX", fields: {}, records: [] });
+    });
+    await client.listRecords(T.events, { fields: [F.events.namaAcara] });
+    await client.getRecord(T.events, "recX");
+    await client.createRecords(T.events, [{ [F.events.namaAcara]: "a" }]);
+    await client.updateRecords(T.events, [{ id: "recX", fields: { [F.events.namaAcara]: "a" } }]);
+    const methods = fetchMock.mock.calls.map((c) => String((c[1] as RequestInit | undefined)?.method ?? "GET").toUpperCase());
+    expect(methods.length).toBe(4);
+    expect(methods).not.toContain("DELETE");
+    expect(new Set(methods)).toEqual(new Set(["GET", "POST", "PATCH"]));
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync("src/lib/airtable/client.ts", "utf8")).not.toMatch(/["']DELETE["']/i);
+  });
+
+  it("refuses to request a field outside the read allowlist", async () => {
+    await expect(client.listRecords(T.events, { fields: ["fldNotInAllowlist000"] })).rejects.toThrow(/allowlist/i);
+    await expect(client.listRecords("tblUnknownTable0000", { fields: [] })).rejects.toThrow(/allowlist/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("strips non-allowlisted fields from list and get responses", async () => {
+    fetchMock.mockResolvedValueOnce(json({ records: [{ id: "rec1", fields: { [F.teamUmat.namaLengkap]: "A", fldJabatanBPK00000: "Ketua" } }] }));
+    const [r] = await client.listRecords(T.teamUmat, { fields: [F.teamUmat.namaLengkap] });
+    expect(r.fields).toEqual({ [F.teamUmat.namaLengkap]: "A" });
+    fetchMock.mockResolvedValueOnce(json({ id: "rec1", fields: { [F.teamUmat.namaLengkap]: "A", fldJabatanBPK00000: "Ketua" } }));
+    expect((await client.getRecord(T.teamUmat, "rec1")).fields).toEqual({ [F.teamUmat.namaLengkap]: "A" });
+  });
+
+  it("surfaces a redacted Airtable error body", async () => {
+    fetchMock.mockResolvedValue(json({ error: { type: "INVALID_VALUE_FOR_COLUMN", message: 'Field "x" cannot accept "budi@mail.id 08123456789"' } }, 422));
+    const err = await client.getRecord(T.events, "recX").catch((e: Error) => e);
+    expect(String(err)).toMatch(/HTTP 422/);
+    expect(String(err)).toContain("INVALID_VALUE_FOR_COLUMN");
+    expect(String(err)).not.toContain("budi@mail.id");
+    expect(String(err)).not.toContain("08123456789");
+  });
+
+  it("ignores AIRTABLE_API_URL in production (token only ever goes to Airtable)", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    fetchMock.mockResolvedValueOnce(json({ id: "recX", fields: {} }));
+    await client.getRecord(T.events, "recX");
+    expect(new URL(fetchMock.mock.calls[0][0] as string).origin).toBe("https://api.airtable.com");
+  });
+});

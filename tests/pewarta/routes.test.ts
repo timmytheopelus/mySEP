@@ -50,4 +50,42 @@ describe("pewarta routes", () => {
     expect((await FOTO(new Request("https://app.test/api/pewarta/x/foto"), ctx)).status).toBe(404);
     f.mockRestore();
   });
+
+  it("foto: unauthenticated is 401 and never fetches upstream", async () => {
+    const { renewSession } = await import("@/lib/auth/session");
+    vi.mocked(renewSession).mockResolvedValueOnce(null);
+    const f = vi.spyOn(globalThis, "fetch");
+    expect((await FOTO(new Request("https://app.test/api/pewarta/x/foto"), ctx)).status).toBe(401);
+    expect(f).not.toHaveBeenCalled();
+    f.mockRestore();
+  });
+  it("foto: an upstream redirect is refused (404) and its body cancelled", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({ cancel });
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(body, { status: 302, headers: { location: "http://169.254.169.254/", "content-type": "image/jpeg" } }));
+    expect((await FOTO(new Request("https://app.test/api/pewarta/x/foto"), ctx)).status).toBe(404);
+    expect(cancel).toHaveBeenCalled();
+    f.mockRestore();
+  });
+  it("foto: an oversize Content-Length is refused before reading the body", async () => {
+    const pull = vi.fn();
+    const cancel = vi.fn();
+    const body = new ReadableStream({ pull, cancel }, { highWaterMark: 0 });
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(body, { status: 200, headers: { "content-type": "image/png", "content-length": String(50 * 1024 * 1024) } }));
+    expect((await FOTO(new Request("https://app.test/api/pewarta/x/foto"), ctx)).status).toBe(404);
+    expect(pull).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalled();
+    f.mockRestore();
+  });
+  it("foto: a body that grows past the cap without Content-Length is cut off", async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const cancel = vi.fn();
+    const body = new ReadableStream({ pull(c) { sent++; c.enqueue(chunk); }, cancel }, { highWaterMark: 0 });
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(body, { status: 200, headers: { "content-type": "image/png" } }));
+    expect((await FOTO(new Request("https://app.test/api/pewarta/x/foto"), ctx)).status).toBe(404);
+    expect(sent).toBeLessThanOrEqual(5);
+    expect(cancel).toHaveBeenCalled();
+    f.mockRestore();
+  });
 });

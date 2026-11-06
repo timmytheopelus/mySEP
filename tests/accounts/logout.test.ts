@@ -48,4 +48,23 @@ describe("server-side logout", () => {
     resetRateLimitMemory(); // cold start: with the in-memory fallback this is the documented limit
     expect(await readSession(ck(t))).not.toBeNull();
   });
+
+  it("a failed denylist write is surfaced and logged, and the cookie is still cleared", async () => {
+    const t = await issueSession(pic, OTP);
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://up.example");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "t");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([{ error: "OOM command not allowed" }])));
+    try {
+      const res = await post(ck(t));
+      expect(res.status).toBe(200);
+      expect(res.headers.getSetCookie().join(";")).toContain("Max-Age=0");
+      expect(await res.json()).toMatchObject({ ok: true, serverRevoked: false });
+      expect(err).toHaveBeenCalled();
+      expect(String(err.mock.calls[0][0])).not.toContain(t);
+    } finally {
+      vi.unstubAllGlobals();
+      err.mockRestore();
+    }
+  });
 });
