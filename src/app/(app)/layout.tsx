@@ -8,7 +8,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const session = await readSession((await cookies()).toString()).catch(() => null);
   return (
     <>
-      {session ? <AppNav sep={session.role === "SEP"} /> : null}
+      {session ? <AppNav sep={session.role === "SEP"} owner={session.accountId} /> : null}
       {children}
     </>
   );

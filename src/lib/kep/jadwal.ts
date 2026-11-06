@@ -1,7 +1,7 @@
 import "server-only";
-import { getRecord, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
-import { F, T } from "@/lib/airtable/schema";
-import { assertKepInScope, requireRole } from "@/lib/auth/guard";
+import { getRecord, listRecords, updateRecords } from "@/lib/airtable/client";
+import { F, T, pickAllowedForRole } from "@/lib/airtable/schema";
+import { assertKepInScope, assertSubEventInScope, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 import { logAudit } from "@/lib/audit/log";
 import { HttpError } from "@/lib/http/errors";
@@ -16,20 +16,24 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 const day = (v: unknown) => str(v).slice(0, 10);
 const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 
-/** PIC/ADMIN of the owning paroki (SEP 403, other parish 404). A rejected KEP is read-only (409). */
+export const TERKUNCI = "Jadwal pewarta terkunci setelah disetujui";
+
+/**
+ * PIC of the owning paroki only (Admin Paroki 403, SEP 403, other parish 404). Pewarta may be proposed only while the KEP
+ * is Diajukan: after approval the PIC could otherwise toggle an assignment to unlock a pewarta's phone number.
+ */
 async function scope(actor: Session, eventKepId: string) {
-  requireRole(actor, ["PIC", "ADMIN"]);
+  requireRole(actor, ["PIC"]);
   const { eventKep } = await assertKepInScope(actor, eventKepId);
-  if (str(eventKep.fields[F.eventKep.statusPersetujuan]) === "Ditolak") throw new HttpError(409, "KEP ditolak, jadwal tidak dapat diubah");
-  return { eventIds: ids(eventKep.fields[F.eventKep.events]) };
+  return { eventIds: ids(eventKep.fields[F.eventKep.events]), terkunci: str(eventKep.fields[F.eventKep.statusPersetujuan]) !== "Diajukan" };
 }
 
 export type JadwalItem = { id: string; urutan: number; agenda: string; tanggal: string; pengajarIds: string[] };
-export type Jadwal = { pertemuan: JadwalItem[]; opsi: { id: string; nama: string }[] };
+export type Jadwal = { pertemuan: JadwalItem[]; opsi: { id: string; nama: string }[]; terkunci: boolean };
 
 /** Pertemuan of the KEP with their current pewarta, plus the active pewarta that can be assigned (names only). */
 export async function getJadwal(actor: Session, eventKepId: string): Promise<Jadwal> {
-  const { eventIds } = await scope(actor, eventKepId);
+  const { eventIds, terkunci } = await scope(actor, eventKepId);
   const [subs, pewarta] = await Promise.all([
     listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan, F.subEvent.pengajar] }),
     listPewarta(actor),
@@ -44,7 +48,7 @@ export async function getJadwal(actor: Session, eventKepId: string): Promise<Jad
       pengajarIds: ids(s.fields[F.subEvent.pengajar]),
     }))
     .sort((a, b) => a.tanggal.localeCompare(b.tanggal) || a.urutan - b.urutan || a.id.localeCompare(b.id));
-  return { pertemuan, opsi: pewarta.map((p) => ({ id: p.id, nama: p.nama })) };
+  return { pertemuan, opsi: pewarta.map((p) => ({ id: p.id, nama: p.nama })), terkunci };
 }
 
 type Marker = { opId?: unknown; t?: unknown; kepId?: unknown; ids?: unknown };
@@ -71,15 +75,11 @@ async function markers(subEventId: string): Promise<{ aksi: string; m: Marker }[
  * this KEP's events (ids from URL/body are never trusted). Audit first (abort when it fails), idempotent per opId.
  */
 export async function assignPengajar(actor: Session, eventKepId: string, subEventId: string, pengajarIds: string[], opId: string): Promise<{ pengajarIds: string[] }> {
-  const { eventIds } = await scope(actor, eventKepId);
+  const { eventIds, terkunci } = await scope(actor, eventKepId);
+  if (terkunci) throw new HttpError(409, TERKUNCI);
   if (typeof opId !== "string" || !OP_ID.test(opId)) throw new HttpError(422, "opId tidak valid");
-  if (typeof subEventId !== "string" || !REC_ID.test(subEventId)) throw new HttpError(404);
-  let sub: AtRecord;
-  try {
-    sub = await getRecord(T.subEvent, subEventId);
-  } catch {
-    throw new HttpError(404);
-  }
+  // Scope-checked fetch (404 for foreign / malformed / unknown), then it must hang under THIS KEP's events.
+  const { subEvent: sub } = await assertSubEventInScope(actor, subEventId);
   if (!ids(sub.fields[F.subEvent.acara]).some((e) => eventIds.includes(e))) throw new HttpError(404);
 
   const want = [...new Set(pengajarIds)];
@@ -117,7 +117,7 @@ export async function assignPengajar(actor: Session, eventKepId: string, subEven
     throw e;
   };
   try {
-    await updateRecords(T.subEvent, [{ id: subEventId, fields: { [F.subEvent.pengajar]: want } }]);
+    await updateRecords(T.subEvent, [{ id: subEventId, fields: pickAllowedForRole(T.subEvent, actor.role, { [F.subEvent.pengajar]: want }) }]);
     const back = ids((await getRecord(T.subEvent, subEventId)).fields[F.subEvent.pengajar]);
     if (!sameSet(back, want)) return await fail(new HttpError(503, "Penugasan belum tersimpan. Coba lagi."));
   } catch (e) {

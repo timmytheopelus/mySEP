@@ -22,6 +22,10 @@ export type KepHub = {
   tanggalSelesai: string | null;
   /** PIC / Admin of the owning paroki: may manage (add peserta, link, jadwal). SEP reads aggregates only. */
   kelola: boolean;
+  /** PIC only: pewarta assignment, registration link, manual peserta, import (Admin Paroki: none of these). */
+  pic: boolean;
+  /** Pewarta assignment is open only while Diajukan. */
+  jadwalTerkunci: boolean;
   /** Absen / penetapan need a Disetujui KEP. */
   absenTersedia: boolean;
   statistik: { aktif: number; mundur: number; lulus: number; tidakLulus: number; total: number };
@@ -105,6 +109,8 @@ export async function getKepHub(session: Session, eventKepId: string): Promise<K
     tanggalMulai: day(rec.fields[F.eventKep.tanggalMulai]) || null,
     tanggalSelesai: day(rec.fields[F.eventKep.tanggalSelesai]) || null,
     kelola,
+    pic: session.role === "PIC",
+    jadwalTerkunci: status !== "Diajukan",
     absenTersedia: kelola && status === "Disetujui",
     statistik,
     pertemuan,

@@ -25,7 +25,7 @@ const PB = "recPAROKIB0000001";
 const pic: Session = { accountId: "recPIC0000000001", email: "pic@x.id", role: "PIC", parokiId: PA };
 const adm: Session = { accountId: "recADM0000000001", email: "adm@x.id", role: "ADMIN", parokiId: PA };
 const sep: Session = { accountId: "recSEPA000000001", email: "sepa@x.id", role: "SEP", parokiId: null };
-const admB: Session = { accountId: "recADMB000000001", email: "admb@x.id", role: "ADMIN", parokiId: PB };
+const admB: Session = { accountId: "recPICB000000001", email: "picb@x.id", role: "PIC", parokiId: PB }; // PIC of another parish
 const KEP = "recKEPA0000000001";
 const KEP_DIAJUKAN = "recKEPD0000000001";
 const EV = "recEVA00000000001";
@@ -65,7 +65,7 @@ beforeEach(async () => {
   await seedAccount({ id: sep.accountId, email: sep.email, peran: "SEP" });
   await seedAccount({ id: pic.accountId, email: pic.email, peran: "PIC Paroki", fields: { [A.paroki]: [PA] } });
   await seedAccount({ id: adm.accountId, email: adm.email, peran: "Admin Paroki", fields: { [A.paroki]: [PA] } });
-  await seedAccount({ id: admB.accountId, email: admB.email, peran: "Admin Paroki", fields: { [A.paroki]: [PB] } });
+  await seedAccount({ id: admB.accountId, email: admB.email, peran: "PIC Paroki", fields: { [A.paroki]: [PB] } });
   store[T.penyelenggaraKep] = [{ id: "recORGA0000000001", fields: { [F.penyelenggaraKep.paroki]: [PA] } }];
   store[T.eventKep] = [
     { id: KEP, fields: { [F.eventKep.events]: [EV], [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.statusPersetujuan]: "Disetujui" } },

@@ -2,15 +2,21 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
-import { clearOfflineQueue } from "@/lib/offline/queue";
+import { useEffect, useRef, useState } from "react";
+import { clearOfflineQueue, pendingOps } from "@/lib/offline/queue";
 import styles from "./nav.module.css";
 
 type Item = { href: string; label: string; match: (p: string) => boolean };
 
-export default function AppNav({ sep }: { sep: boolean }) {
+export default function AppNav({ sep, owner }: { sep: boolean; owner: string }) {
   const path = usePathname() ?? "";
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<number | null>(null); // unsent absen of this account: asks before they are discarded
+  const stay = useRef<HTMLButtonElement>(null);
+  const exitBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (pending !== null) stay.current?.focus();
+  }, [pending]);
   const items: Item[] = [
     { href: "/kep", label: "KEP", match: (p) => p === "/kep" || (p.startsWith("/kep/") && !p.startsWith("/kep/antrean")) },
     ...(sep ? [{ href: "/kep/antrean", label: "Antrean", match: (p: string) => p.startsWith("/kep/antrean") }] : []),
@@ -18,7 +24,24 @@ export default function AppNav({ sep }: { sep: boolean }) {
     { href: sep ? "/akun" : "/profil", label: "Akun", match: (p) => p.startsWith("/akun") || p.startsWith("/profil") },
   ];
 
+  async function askLogout() {
+    let n = 0;
+    try {
+      n = (await pendingOps(owner)).length;
+    } catch {
+      /* storage unavailable: nothing to lose */
+    }
+    if (n > 0) setPending(n);
+    else await logout();
+  }
+
+  function cancelLogout() {
+    setPending(null);
+    exitBtn.current?.focus();
+  }
+
   async function logout() {
+    setPending(null);
     setBusy(true);
     // Antrean absen di perangkat ini dihapus DULU, sebelum sesi dicabut (perangkat bisa dipakai bergantian).
     try {
@@ -45,11 +68,34 @@ export default function AppNav({ sep }: { sep: boolean }) {
           </li>
         ))}
         <li className={styles.keluar}>
-          <button type="button" className={styles.link} onClick={logout} disabled={busy}>
+          <button ref={exitBtn} type="button" className={styles.link} onClick={askLogout} disabled={busy}>
             {busy ? "Keluar..." : "Keluar"}
           </button>
         </li>
       </ul>
+      {pending !== null ? (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="keluar-judul"
+          className={styles.dialog}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") cancelLogout();
+          }}
+        >
+          <p id="keluar-judul" className={styles.dialogText}>
+            {pending} absen belum terkirim akan hilang. Keluar sekarang?
+          </p>
+          <div className={styles.dialogActions}>
+            <button ref={stay} type="button" className={styles.stay} onClick={cancelLogout}>
+              Tetap di sini
+            </button>
+            <button type="button" className={styles.leave} onClick={logout}>
+              Keluar sekarang
+            </button>
+          </div>
+        </div>
+      ) : null}
     </nav>
   );
 }

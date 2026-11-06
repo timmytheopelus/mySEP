@@ -15,7 +15,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   if (!session) redirect("/login");
   const { id } = await params;
   if (!/^rec[A-Za-z0-9]{10,}$/.test(id)) notFound();
-  if (session.role === "SEP") redirect(`/kep/${id}`); // SEP reads the schedule on the detail page; assignment is the paroki's job
+  if (session.role !== "PIC") redirect(`/kep/${id}`); // SEP / Admin Paroki read the schedule on the detail page; proposing pewarta is the PIC's job
   let jadwal: Jadwal;
   try {
     jadwal = await getJadwal(session, id);
@@ -40,8 +40,16 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         ← Kembali ke KEP
       </Link>
       <h1>Jadwal dan pewarta</h1>
-      <p className={styles.hint}>Pilih pewarta untuk tiap pertemuan, lalu simpan per pertemuan. Hanya pewarta yang aktif ditawarkan.</p>
-      <JadwalClient kepId={id} pertemuan={jadwal.pertemuan} opsi={jadwal.opsi} />
+      {jadwal.terkunci ? (
+        <p className={styles.lock} data-testid="jadwal-terkunci">
+          Penugasan pewarta terkunci setelah KEP disetujui SEP; halaman ini hanya-baca. Hubungi SEP jika perlu perubahan.
+        </p>
+      ) : (
+        <p className={styles.hint}>
+          Usulkan pewarta untuk tiap pertemuan, lalu simpan per pertemuan. Setelah KEP disetujui SEP, penugasan terkunci. Hanya pewarta yang aktif ditawarkan.
+        </p>
+      )}
+      <JadwalClient kepId={id} pertemuan={jadwal.pertemuan} opsi={jadwal.opsi} terkunci={jadwal.terkunci} />
     </main>
   );
 }

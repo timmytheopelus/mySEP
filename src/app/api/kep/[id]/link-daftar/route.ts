@@ -12,5 +12,5 @@ export const GET = withAuth<{ id: string }>(
     if (!lim.ok) return tooMany(lim.retryAfter);
     return json(await getLinkDaftar(session, params.id));
   },
-  { roles: ["PIC", "ADMIN"] },
+  { roles: ["PIC"] },
 );

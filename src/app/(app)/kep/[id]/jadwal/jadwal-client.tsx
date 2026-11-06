@@ -11,7 +11,7 @@ const newOp = () => `peng-${crypto.randomUUID().replace(/-/g, "")}`;
 const tgl = (iso: string) => (iso ? new Date(`${iso}T00:00:00Z`).toLocaleDateString("id-ID", { timeZone: "UTC", weekday: "short", day: "numeric", month: "long", year: "numeric" }) : "Tanggal belum diatur");
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 
-export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string; pertemuan: Item[]; opsi: Opsi[] }) {
+export default function JadwalClient({ kepId, pertemuan, opsi, terkunci }: { kepId: string; pertemuan: Item[]; opsi: Opsi[]; terkunci: boolean }) {
   const aktif = new Set(opsi.map((o) => o.id));
   // Assigned but no longer active pewarta cannot be kept (the server only accepts active ones).
   const start = Object.fromEntries(pertemuan.map((p) => [p.id, p.pengajarIds.filter((i) => aktif.has(i))]));
@@ -19,7 +19,7 @@ export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string
   const [saved, setSaved] = useState<Record<string, string[]>>(start);
   const [sel, setSel] = useState<Record<string, string[]>>(start);
   const [open, setOpen] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState<Record<string, Msg>>({});
   const ops = useRef<Record<string, string>>({}); // one opId per unsaved selection: a retry is idempotent, a new selection is a new op
   const nama = new Map(opsi.map((o) => [o.id, o.nama]));
@@ -33,7 +33,7 @@ export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string
   async function save(sid: string) {
     const ids = sel[sid] ?? [];
     ops.current[sid] ??= newOp();
-    setBusy(sid);
+    setBusy((b) => ({ ...b, [sid]: true }));
     setMsg((m) => ({ ...m, [sid]: { text: "Menyimpan...", bad: false } })); // shown at once; confirmed or corrected below
     try {
       const res = await fetch(`/api/kep/${kepId}/subevent/${sid}/pengajar`, {
@@ -42,7 +42,11 @@ export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string
         body: JSON.stringify({ pengajarIds: ids, opId: ops.current[sid] }),
       });
       if (res.ok) {
-        setSaved((s) => ({ ...s, [sid]: ids }));
+        // The server's answer is the truth (it dedupes and may differ from what was sent).
+        const back = ((await res.json().catch(() => null)) as { pengajarIds?: unknown } | null)?.pengajarIds;
+        const confirmed = Array.isArray(back) ? back.filter((x): x is string => typeof x === "string") : ids;
+        setSaved((s) => ({ ...s, [sid]: confirmed }));
+        setSel((s) => ({ ...s, [sid]: confirmed }));
         delete ops.current[sid];
         setMsg((m) => ({ ...m, [sid]: { text: "Tersimpan.", bad: false } }));
         return;
@@ -52,7 +56,7 @@ export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string
     } catch {
       setMsg((m) => ({ ...m, [sid]: { text: "Tidak dapat terhubung. Pilihan Anda masih di layar; coba simpan lagi.", bad: true } }));
     } finally {
-      setBusy(null);
+      setBusy((b) => ({ ...b, [sid]: false }));
     }
   }
 
@@ -70,16 +74,18 @@ export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string
             <p className={styles.current}>
               Pewarta: {cur.length > 0 ? cur.map((i) => nama.get(i)).join(", ") : "belum ditugaskan"}
             </p>
-            {hidden[p.id] > 0 && msg[p.id]?.text !== "Tersimpan." ? (
+            {!terkunci && hidden[p.id] > 0 && msg[p.id]?.text !== "Tersimpan." ? (
               <p className={styles.warn}>{hidden[p.id]} pewarta yang tercatat sudah tidak aktif dan akan dilepas saat disimpan.</p>
             ) : null}
-            <div className={styles.actions}>
-              <button type="button" className={styles.btn} aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : p.id)}>
-                {isOpen ? "Tutup pilihan" : "Ubah pewarta"}
-              </button>
-            </div>
-            {isOpen ? (
-              <fieldset className={styles.picker}>
+            {terkunci ? null : (
+              <div className={styles.actions}>
+                <button type="button" className={styles.btn} aria-expanded={isOpen} aria-controls={`pick-${p.id}`} onClick={() => setOpen(isOpen ? null : p.id)}>
+                  {isOpen ? "Tutup pilihan" : "Ubah pewarta"}
+                </button>
+              </div>
+            )}
+            {isOpen && !terkunci ? (
+              <fieldset className={styles.picker} id={`pick-${p.id}`}>
                 <legend className={styles.legend}>Pewarta untuk {p.agenda || `pertemuan ${p.urutan}`}</legend>
                 {opsi.length === 0 ? <p>Belum ada pewarta aktif.</p> : null}
                 {opsi.map((o) => (
@@ -95,11 +101,13 @@ export default function JadwalClient({ kepId, pertemuan, opsi }: { kepId: string
                 ))}
               </fieldset>
             ) : null}
+            {terkunci ? null : (
             <div className={styles.actions}>
-              <button type="button" className={styles.btnPrimary} onClick={() => save(p.id)} disabled={busy === p.id || !dirty}>
-                {busy === p.id ? "Menyimpan..." : "Simpan"}
+              <button type="button" className={styles.btnPrimary} onClick={() => save(p.id)} disabled={busy[p.id] || !dirty}>
+                {busy[p.id] ? "Menyimpan..." : "Simpan"}
               </button>
             </div>
+            )}
             <p role="status" className={`${styles.msg} ${m?.bad ? styles.error : styles.ok}`}>{m?.text ?? ""}</p>
           </li>
         );

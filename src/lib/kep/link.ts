@@ -28,7 +28,7 @@ function baseUrl(): string {
 }
 
 async function ownEvent(actor: Session, eventKepId: string) {
-  requireRole(actor, ["PIC", "ADMIN"]);
+  requireRole(actor, ["PIC"]);
   const { eventKep } = await assertKepInScope(actor, eventKepId);
   const eventId = ids(eventKep.fields[F.eventKep.events])[0];
   if (!eventId) throw new HttpError(409, "KEP belum memiliki acara");

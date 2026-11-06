@@ -13,13 +13,17 @@ const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is str
 export async function pengalamanPewarta(session: Session): Promise<Map<string, number>> {
   requireRole(session, ["SEP", "PIC", "ADMIN"]);
   const [subs, keps] = await Promise.all([
-    listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.pengajar] }),
-    listRecords(T.eventKep, { fields: [F.eventKep.events] }),
+    listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.tanggal, F.subEvent.pengajar] }),
+    listRecords(T.eventKep, { fields: [F.eventKep.events, F.eventKep.statusPersetujuan] }),
   ]);
-  const kepEvents = new Set(keps.flatMap((k) => ids(k.fields[F.eventKep.events])));
+  // Only approved KEPs and meetings already held (WIB date): a proposal or a future assignment is not experience yet.
+  const today = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+  const kepEvents = new Set(keps.filter((k) => k.fields[F.eventKep.statusPersetujuan] === "Disetujui").flatMap((k) => ids(k.fields[F.eventKep.events])));
   const out = new Map<string, number>();
   for (const s of subs) {
     if (!ids(s.fields[F.subEvent.acara]).some((e) => kepEvents.has(e))) continue; // SubEvent also serves non-KEP events
+    const tgl = typeof s.fields[F.subEvent.tanggal] === "string" ? (s.fields[F.subEvent.tanggal] as string).slice(0, 10) : "";
+    if (!tgl || tgl > today) continue;
     for (const p of new Set(ids(s.fields[F.subEvent.pengajar]))) out.set(p, (out.get(p) ?? 0) + 1);
   }
   return out;

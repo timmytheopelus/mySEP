@@ -91,7 +91,7 @@ export default function LinkDaftar({ kepId, initial }: { kepId: string; initial:
       <img className={styles.qr} src={link.qr} alt="Kode QR tautan pendaftaran" width={240} height={240} />
       <p role="status" className={err ? styles.error : styles.ok}>{msg}</p>
       {confirm ? (
-        <div className={styles.warn} role="group" aria-label="Konfirmasi tautan baru">
+        <div id="link-konfirmasi" className={styles.warn} role="group" aria-label="Konfirmasi tautan baru">
           <p>Tautan yang sudah dibagikan akan berhenti berfungsi. Pendaftar harus memakai tautan baru. Lanjutkan?</p>
           <div className={styles.actions}>
             <button ref={yesBtn} type="button" className={styles.btnDanger} onClick={rotate} disabled={busy}>
@@ -101,7 +101,7 @@ export default function LinkDaftar({ kepId, initial }: { kepId: string; initial:
           </div>
         </div>
       ) : (
-        <button ref={askBtn} type="button" className={styles.btn} onClick={() => setConfirm(true)}>Buat tautan baru</button>
+        <button ref={askBtn} type="button" className={styles.btn} aria-expanded={false} aria-controls="link-konfirmasi" onClick={() => setConfirm(true)}>Buat tautan baru</button>
       )}
     </section>
   );

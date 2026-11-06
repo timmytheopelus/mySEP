@@ -18,5 +18,5 @@ export const POST = withAuth<{ id: string }>(
     if (!parsed.success) throw new HttpError(422, "Data tidak valid");
     return json(await rotateLinkDaftar(session, params.id, parsed.data.opId));
   },
-  { roles: ["PIC", "ADMIN"] },
+  { roles: ["PIC"] },
 );

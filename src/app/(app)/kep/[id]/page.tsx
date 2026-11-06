@@ -45,17 +45,24 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const disetujui = hub.status === "Disetujui";
   let link: LinkDaftar | null = null;
   let linkError: string | null = null;
-  if (hub.kelola && disetujui) {
+  // Each optional card degrades on its own: an Airtable hiccup must not take the whole hub down.
+  if (hub.pic && disetujui) {
     try {
       link = await getLinkDaftar(session, id);
     } catch (e) {
-      if (!(e instanceof HttpError)) throw e;
-      linkError = e.message;
+      linkError = e instanceof HttpError ? e.message : "Tautan belum dapat dimuat. Muat ulang halaman sebentar lagi.";
     }
   }
-  const paroki = hub.kelola && disetujui ? await parokiOptions() : [];
+  let paroki: { id: string; nama: string }[] = [];
+  let parokiError = false;
+  if (hub.pic && disetujui) {
+    try {
+      paroki = await parokiOptions();
+    } catch {
+      parokiError = true;
+    }
+  }
   const today = hub.pertemuan.find((p) => p.id === hub.pertemuanBerikutnya);
-  const isPic = session.role === "PIC";
 
   return (
     <main className={styles.page}>
@@ -99,14 +106,16 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
                 Penetapan hasil akhir
               </Link>
             ) : null}
-            {isPic && disetujui ? (
+            {hub.pic && disetujui ? (
               <Link prefetch={false} className={styles.linkBtn} href={`/kep/${id}/import`}>
                 Impor dari Excel
               </Link>
             ) : null}
-            <Link prefetch={false} className={styles.linkBtn} href={`/kep/${id}/jadwal`}>
-              Atur jadwal dan pewarta
-            </Link>
+            {hub.pic ? (
+              <Link prefetch={false} className={styles.linkBtn} href={`/kep/${id}/jadwal`}>
+                {hub.jadwalTerkunci ? "Lihat jadwal pewarta" : "Atur jadwal dan pewarta"}
+              </Link>
+            ) : null}
           </div>
           {hub.absenTersedia && today && !today.hariIni ? <p className={styles.hint}>Tidak ada pertemuan hari ini. Tombol Absen membuka pertemuan terdekat.</p> : null}
         </nav>
@@ -114,6 +123,13 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
       <section className={styles.card} aria-labelledby="h-jadwal">
         <h2 id="h-jadwal" className={styles.h2}>Jadwal pertemuan ({hub.pertemuan.length})</h2>
+        {hub.pic ? (
+          <p className={styles.hint}>
+            {hub.jadwalTerkunci
+              ? "Penugasan pewarta terkunci setelah KEP disetujui SEP. Hubungi SEP jika perlu perubahan."
+              : "Penugasan pewarta terbuka sampai KEP disetujui SEP, lalu terkunci."}
+          </p>
+        ) : null}
         {hub.pertemuan.length === 0 ? (
           <p className={styles.muted}>Belum ada pertemuan.</p>
         ) : (
@@ -136,20 +152,26 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
       {hub.kelola ? (
         <>
-          {link ? <LinkDaftarCard kepId={id} initial={link} /> : null}
+          {hub.pic && link ? <LinkDaftarCard kepId={id} initial={link} /> : null}
           {linkError ? (
             <section className={styles.card} aria-labelledby="h-link-err" data-testid="tautan-daftar-error">
               <h2 id="h-link-err" className={styles.h2}>Tautan pendaftaran</h2>
               <p className={styles.error} role="alert">{linkError}</p>
             </section>
           ) : null}
-          {!disetujui && hub.status !== "Ditolak" ? (
+          {hub.pic && !disetujui && hub.status !== "Ditolak" ? (
             <section className={styles.card}>
               <h2 className={styles.h2}>Tautan pendaftaran</h2>
               <p className={styles.muted}>Tautan pendaftaran dan input peserta tersedia setelah KEP disetujui SEP.</p>
             </section>
           ) : null}
-          {disetujui ? <TambahPeserta kepId={id} paroki={paroki} /> : null}
+          {hub.pic && disetujui && !parokiError ? <TambahPeserta kepId={id} paroki={paroki} /> : null}
+          {hub.pic && disetujui && parokiError ? (
+            <section className={styles.card}>
+              <h2 className={styles.h2}>Tambah peserta</h2>
+              <p className={styles.error} role="alert">Formulir belum dapat dimuat. Muat ulang halaman sebentar lagi.</p>
+            </section>
+          ) : null}
 
           <section className={styles.card} aria-labelledby="h-peserta">
             <h2 id="h-peserta" className={styles.h2}>Daftar peserta ({hub.peserta?.length ?? 0})</h2>
