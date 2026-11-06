@@ -509,6 +509,28 @@ describe("M2 registration window (Asia/Jakarta)", () => {
   });
 });
 
+describe("M3 registration stays open through the last pertemuan (rescheduled past Tanggal Selesai)", () => {
+  const at = (iso: string) => vi.useFakeTimers({ now: new Date(iso), toFake: ["Date"] });
+  it("closing day = max(EventKEP.Tanggal Selesai, last SubEvent date)", async () => {
+    seedKep("Disetujui", { selesai: "2026-12-05" });
+    store[T.subEvent] = [
+      { id: "recSUB1000000001", fields: { [F.subEvent.acara]: [EV], [F.subEvent.tanggal]: "2026-12-05" } },
+      { id: "recSUB2000000001", fields: { [F.subEvent.acara]: [EV], [F.subEvent.tanggal]: "2026-12-12" } }, // last meeting moved later
+      { id: "recSUB3000000001", fields: { [F.subEvent.acara]: [EV2], [F.subEvent.tanggal]: "2027-06-01" } }, // another KEP: irrelevant
+    ];
+    at("2026-12-12T16:59:59Z"); // 23:59:59 WIB on the 12th
+    expect((await registerPeserta(EV, PesertaInput.parse(valid()))).status).toBe("registered");
+    at("2026-12-12T17:00:00Z");
+    await expect(registerPeserta(EV, PesertaInput.parse(valid({ wa: "081299990000", email: "z@x.id" })))).rejects.toBeInstanceOf(RegistrationClosedError);
+  });
+  it("without a later meeting nothing changes (closed the day after Tanggal Selesai)", async () => {
+    seedKep("Disetujui", { selesai: "2026-12-05" });
+    store[T.subEvent] = [{ id: "recSUB1000000001", fields: { [F.subEvent.acara]: [EV], [F.subEvent.tanggal]: "2026-12-05" } }];
+    at("2026-12-06T01:00:00Z");
+    await expect(registerPeserta(EV, PesertaInput.parse(valid()))).rejects.toBeInstanceOf(RegistrationClosedError);
+  });
+});
+
 describe("M4 names", () => {
   it("accepts ordinary names (unicode letters, . ' - ,)", () => {
     for (const n of ["Maria Goreti", "Yohanes de Britto, S.Pd.", "Ng'ang'a O'Brien-Lim", "José Müller"])

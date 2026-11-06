@@ -3,11 +3,11 @@ import { T } from "@/lib/airtable/schema";
 
 /** State of the shared read cache (no client import, so test helpers can reset it). Logic: ./cache.ts */
 export type Entry = { at: number; gen: number; p: Promise<AtRecord[]>; failedAt?: number; inflight?: boolean };
-type State = { tableGen: Map<string, number>; tableCache: Map<string, Entry>; lastGood: Map<string, AtRecord[]>; listeners: Set<(table?: string) => void> };
+type State = { tableGen: Map<string, number>; tableCache: Map<string, Entry>; lastGood: Map<string, { rows: AtRecord[]; at: number }>; listeners: Set<(table?: string) => void> };
 // One state per PROCESS, not per module instance: the production build bundles route handlers and server
 // components separately (two copies of this module in one process), and an API write must invalidate what the
 // pages read. globalThis + Symbol.for is shared by both copies.
-const KEY = Symbol.for("kep.airtable.readCache.v1");
+const KEY = Symbol.for("kep.airtable.readCache.v2");
 const G = globalThis as unknown as Record<symbol, State | undefined>;
 const state: State = (G[KEY] ??= { tableGen: new Map(), tableCache: new Map(), lastGood: new Map(), listeners: new Set() });
 export const tableGen = state.tableGen;

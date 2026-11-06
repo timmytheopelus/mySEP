@@ -11,6 +11,8 @@ import { listRecords, type AtRecord } from "@/lib/airtable/client";
 // ---------------------------------------------------------------------------------------------
 export const TABLE_TTL_MS = 45_000;
 const FAIL_BACKOFF_MS = 10_000;
+/** Last-good rows older than this are never served during an outage (authorization maps, health rows). */
+export const STALE_MAX_MS = 30 * 60_000;
 
 import { genOf, lastGood, tableCache, type Entry } from "./cacheStore";
 export { cacheAge, invalidateTable, onInvalidate, resetReadCache } from "./cacheStore";
@@ -33,7 +35,8 @@ export function cachedList(table: string, fields: string[], filterByFormula?: st
   const ttl = Math.min(o.ttlMs ?? TABLE_TTL_MS, o.maxAgeMs ?? Infinity, cap);
   if (hit && hit.gen === genOf(table)) {
     if (hit.failedAt === undefined && (now - hit.at < ttl || hit.inflight)) return hit.p;
-    if (hit.failedAt !== undefined && now - hit.failedAt < FAIL_BACKOFF_MS) return hit.p;
+    // A forced-fresh read (maxAgeMs: 0, write decisions) never rides the failure backoff: it asks Airtable again.
+    if (hit.failedAt !== undefined && now - hit.failedAt < FAIL_BACKOFF_MS && o.maxAgeMs !== 0) return hit.p;
   }
   const gen = genOf(table);
   const entry: Entry = { at: now, gen, p: Promise.resolve([]), inflight: true };
@@ -41,14 +44,16 @@ export function cachedList(table: string, fields: string[], filterByFormula?: st
     (rows) => {
       entry.inflight = false;
       entry.at = Date.now();
-      if (gen === genOf(table)) lastGood.set(key, rows);
+      if (gen === genOf(table)) lastGood.set(key, { rows, at: Date.now() });
       return rows;
     },
     (err) => {
       entry.inflight = false;
       entry.failedAt = Date.now();
-      const stale = lastGood.get(key);
-      if (stale) return stale;
+      // Stale rows only for ordinary reads, and only while they are younger than STALE_MAX_MS; a forced-fresh read
+      // (maxAgeMs: 0) must see the failure instead of silently deciding on old data.
+      const last = lastGood.get(key);
+      if (last && o.maxAgeMs !== 0 && Date.now() - last.at < STALE_MAX_MS) return last.rows;
       throw err; // rejected promise stays cached during the backoff window
     },
   );

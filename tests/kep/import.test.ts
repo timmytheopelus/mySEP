@@ -433,6 +433,21 @@ describe("commit route", () => {
     const again = await (await post(commitRoute, file, { as: PIC_A })).json();
     expect(again).toMatchObject({ registered: 2, alreadyRegistered: 1, failed: 0 });
   });
+  it("M2: less than one worst-case Airtable wait left before the hard deadline -> no row is started, all answer 'ulangi'", async () => {
+    vi.stubEnv("IMPORT_DEADLINE_MS", "1000"); // < AIRTABLE_MAX_WAIT_MS (30 s)
+    const file = await validXlsx(3);
+    const before = vi.mocked(client.createRecords).mock.calls.length;
+    const res = await post(commitRoute, file, { as: PIC_A });
+    expect(res.status).toBe(200);
+    const b = await res.json();
+    expect(b.registered).toBe(0);
+    expect(b.failed).toBe(3);
+    expect(b.failedRows.map((x: { message: string }) => x.message).join(" ")).toMatch(/batas waktu/);
+    const personCreates = vi.mocked(client.createRecords).mock.calls.slice(before).filter((c) => c[0] === T.pendaftaranEvents);
+    expect(personCreates).toHaveLength(0);
+    vi.stubEnv("IMPORT_DEADLINE_MS", "");
+    expect((await (await post(commitRoute, file, { as: PIC_A })).json()).registered).toBe(3); // the re-run finishes
+  });
   it("registers valid rows, reports row numbers for invalid ones, audits start/done with hash and counts only", async () => {
     const file = await xlsx([goodRow(1), goodRow(2, { Email: "x" }), goodRow(3)]);
     const res = await post(commitRoute, file, { as: PIC_A });

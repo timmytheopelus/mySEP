@@ -57,6 +57,7 @@ export function redactAirtableError(body: unknown): string {
 // reach N x rate, see docs/ops/runbook.md.
 // ---------------------------------------------------------------------------------------------
 
+import { airtableMaxWaitMs, routeDeadline } from "./deadline";
 export { AirtableError, isAirtableNotFound, isTransientAirtableError } from "./errors";
 
 const envNum = (name: string, def: number) => {
@@ -66,7 +67,7 @@ const envNum = (name: string, def: number) => {
 /** Requests per second, clamped to (0, 5]. */
 export const maxRps = () => Math.min(5, envNum("AIRTABLE_MAX_RPS", 4));
 const maxQueue = () => Math.floor(envNum("AIRTABLE_QUEUE_MAX", 40));
-const maxWaitMs = () => envNum("AIRTABLE_MAX_WAIT_MS", 30_000);
+const maxWaitMs = () => airtableMaxWaitMs();
 const pauseMs = () => envNum("AIRTABLE_429_PAUSE_MS", 30_000);
 
 /** Sliding window: at most maxRps() request starts in any 1000 ms (a plain bucket could allow 2x in a window). */
@@ -137,7 +138,8 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   if (!token) throw new Error("AIRTABLE_TOKEN is not set");
   const backoff = envNum("AIRTABLE_BACKOFF_MS", 500);
   const isRead = !init.method || init.method === "GET";
-  const deadline = Date.now() + maxWaitMs();
+  const deadline = Math.min(Date.now() + maxWaitMs(), routeDeadline()); // never wait past the route budget
+  if (Date.now() >= deadline) throw busy(1);
   for (let attempt = 0; ; attempt++) {
     await acquire(deadline);
     let res: Response;

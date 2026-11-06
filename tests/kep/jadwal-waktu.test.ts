@@ -57,6 +57,8 @@ const row = (sid: string) => store[T.subEvent].find((r) => r.id === sid)!.fields
 const auditOf = (aksi: string) => (store[T.auditKep] ?? []).filter((r) => r.fields[AU.aksi] === aksi);
 
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-08T05:00:00Z")); // 2026-11-08 WIB
   vi.stubEnv("SESSION_SECRET", "s".repeat(40));
   vi.stubEnv("MFA_ENC_KEY", randomBytes(32).toString("base64"));
   resetStore();
@@ -89,7 +91,10 @@ beforeEach(async () => {
   store[T.pengajarKep] = [];
   store[T.auditKep] = [];
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 describe("POST /api/kep/[id]/subevent/[sid]/jadwal (I7)", () => {
   it("PIC edits tanggal, jam mulai and jam selesai of one pertemuan; only that row changes; audit has before/after", async () => {
@@ -216,5 +221,54 @@ describe("effects of a date change (I7)", () => {
     await set();
     const j = await getJadwal(pic, KEP);
     expect(j.pertemuan.find((p) => p.id === S1)).toMatchObject({ tanggal: "2026-11-12", jamMulai: "19:00", jamSelesai: "21:00" });
+  });
+});
+
+describe("N2: PIC date guards (SEP exempt)", () => {
+  const P = F.pendaftaranEvents;
+  const early = () => (store[T.eventKep].find((k) => k.id === KEP)!.fields[F.eventKep.tanggalMulai] = "2026-11-01");
+  const peserta = (extra: Record<string, unknown>) =>
+    store[T.pendaftaranEvents].push({ id: `recPEND${store[T.pendaftaranEvents].length}`.padEnd(17, "0"), fields: { [P.event]: [EV], [P.teamUmat]: ["recTEAM0000000001"], [P.statusPendaftaran]: "Daftar", [P.kategoriKepesertaan]: "Peserta", ...extra } });
+  beforeEach(() => {
+    early();
+    store[T.pendaftaranEvents] = [];
+    store[T.teamUmat] = [{ id: "recTEAM0000000001", fields: { [F.teamUmat.namaLengkap]: "A" } }];
+  });
+  const msg = async (r: Response) => ((await r.json()) as { error?: string }).error ?? "";
+
+  it("a future meeting cannot be moved into the past, nor to today (abuse: move the last meeting to today to unlock Hasil akhir)", async () => {
+    for (const [i, d] of ["2026-11-07", "2026-11-08", "2026-11-03"].entries()) {
+      const r = await set({ tanggal: d, opId: `op-jadwal-p${i}0001` });
+      expect(r.status, d).toBe(409);
+      expect(await msg(r)).toMatch(/tanggal.*(lewat|hari ini)/i);
+    }
+    expect(row(S1)[SE.tanggal]).toBe("2026-11-10");
+    expect((await set({ tanggal: "2026-11-09", opId: "op-jadwal-ok0001" })).status).toBe(200); // tomorrow is fine
+  });
+  it("a meeting whose date has passed cannot be moved by the PIC", async () => {
+    vi.setSystemTime(new Date("2026-11-11T05:00:00Z"));
+    const r = await set({ tanggal: "2026-11-20" });
+    expect(r.status).toBe(409);
+    expect(await msg(r)).toMatch(/sudah lewat/i);
+    expect(row(S1)[SE.tanggal]).toBe("2026-11-10");
+  });
+  it("a meeting with a hadir mark cannot be moved by the PIC, but its time can be changed on the same date", async () => {
+    peserta({ [P.pertemuanHadir]: [S1] });
+    const r = await set({ tanggal: "2026-11-12" });
+    expect(r.status).toBe(409);
+    expect(await msg(r)).toMatch(/kehadiran/i);
+    expect((await set({ tanggal: "2026-11-10", jamMulai: "18:00", jamSelesai: "19:00", opId: "op-jadwal-jam001" })).status).toBe(200);
+  });
+  it("once any LULUS / TIDAK LULUS result exists the PIC cannot move any date", async () => {
+    peserta({ [P.keterangan]: "LULUS" });
+    const r = await set({ tanggal: "2026-11-12" }, pic, { id: KEP, sid: S2 });
+    expect(r.status).toBe(409);
+    expect(await msg(r)).toMatch(/hasil akhir/i);
+  });
+  it("SEP is exempt (past meeting, hadir marks, results, to today) and the audit carries the role", async () => {
+    peserta({ [P.pertemuanHadir]: [S1], [P.keterangan]: "TIDAK LULUS" });
+    vi.setSystemTime(new Date("2026-11-11T05:00:00Z"));
+    expect((await set({ tanggal: "2026-11-11" }, sep)).status).toBe(200);
+    expect(JSON.parse(String(auditOf("jadwal_set")[0].fields[AU.sesudah])).role).toBe("SEP");
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { T, F } from "@/lib/airtable/schema";
 import * as client from "@/lib/airtable/client";
+import { withAirtableDeadline } from "@/lib/airtable/deadline";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -149,6 +150,20 @@ describe("throttle and transient errors (final fix C1/I1)", () => {
       expect((r.reason as client.AirtableError).retryAfterS).toBeGreaterThanOrEqual(1);
     }
     expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(1 + 3);
+  });
+  it("M2: inside a route deadline a paused base fails fast (503) instead of waiting the full AIRTABLE_MAX_WAIT_MS", async () => {
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 429, headers: { "retry-after": "20" } }));
+    vi.stubEnv("AIRTABLE_429_PAUSE_MS", "20000");
+    const t0 = Date.now();
+    await withAirtableDeadline(Date.now() + 500, () => client.getRecord(T.events, "recX")).catch(() => undefined); // 429: pauses the process for 20 s
+    const r = await withAirtableDeadline(Date.now() + 500, () => client.getRecord(T.events, "recY")).then(() => null, (e) => e);
+    expect(client.isTransientAirtableError(r)).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(3000);
+    // past deadline: no request is even attempted
+    fetchMock.mockClear();
+    const late = await withAirtableDeadline(Date.now() - 1, () => client.getRecord(T.events, "recZ")).then(() => null, (e) => e);
+    expect(client.isTransientAirtableError(late)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
   it("honours Retry-After on 429: the whole process pauses, then retries", async () => {
     let n = 0;

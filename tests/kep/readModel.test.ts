@@ -139,6 +139,21 @@ describe("publicStatsForPage (final fix I2: never blocks unauthenticated traffic
     const jobs: (() => Promise<unknown>)[] = [];
     return { jobs, background: (fn: () => Promise<unknown>) => void jobs.push(fn), run: () => Promise.all(jobs.splice(0).map((j) => j())) };
   };
+  it("N1: attendance taps, registrations and jadwal edits never make the landing stats stale (zero refreshes)", async () => {
+    await publicStats(); // warm
+    const calls = vi.mocked(listRecords).mock.calls.length;
+    const b = bg();
+    for (const t of [T.pendaftaranEvents, T.subEvent, T.teamUmat, T.auditKep, T.pendaftaranEvents]) {
+      invalidateKepCache(t);
+      await publicStatsForPage("203.0.113.9", b);
+    }
+    expect(b.jobs).toHaveLength(0);
+    expect(vi.mocked(listRecords).mock.calls.length).toBe(calls);
+    // structural change (KEP / organiser / parish): the numbers are recomputed
+    invalidateKepCache(T.eventKep);
+    await publicStatsForPage("203.0.113.9", b);
+    expect(b.jobs).toHaveLength(1);
+  });
   it("cold instance: returns null at once (static fallback), refreshes in the background, then serves from memory", async () => {
     const b = bg();
     expect(await publicStatsForPage("203.0.113.1", b)).toBeNull();

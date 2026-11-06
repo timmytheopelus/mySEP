@@ -1,7 +1,7 @@
 import "server-only";
 import { getRecord, listRecords, updateRecords } from "@/lib/airtable/client";
 import { F, T, pickAllowedForRole } from "@/lib/airtable/schema";
-import { assertKepInScope, assertSubEventInScope, requireRole } from "@/lib/auth/guard";
+import { assertKepInScope, assertSubEventInScope, listPesertaInScope, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 import { logAudit } from "@/lib/audit/log";
 import { HttpError } from "@/lib/http/errors";
@@ -201,6 +201,28 @@ async function waktuMarkers(subEventId: string): Promise<WMarker[]> {
   return out;
 }
 
+const todayWib = () => new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+export const GESER_LEWAT = "Pertemuan yang tanggalnya sudah lewat tidak dapat dipindahkan. Hubungi SEP.";
+export const GESER_KEHADIRAN = "Pertemuan ini sudah punya catatan kehadiran sehingga tanggalnya tidak dapat dipindahkan. Hubungi SEP.";
+export const GESER_HASIL = "Hasil akhir (lulus / tidak lulus) sudah ditetapkan untuk KEP ini sehingga tanggal pertemuan tidak dapat dipindahkan. Hubungi SEP.";
+export const GESER_KE_LEWAT = "Tanggal baru harus setelah hari ini. Pertemuan tidak dapat dipindahkan ke hari ini atau tanggal yang sudah lewat.";
+
+/**
+ * PIC only (SEP is exempt, audited with its role): the date drives the attendance denominator and the opening of
+ * "Hasil akhir", so a PIC may not move a meeting that already happened or has marks, may not move any date once a
+ * result exists, and may not move a meeting to today or the past (that would unlock the penetapan early).
+ * One fresh read of this KEP's registrations (marks and results).
+ */
+async function assertTanggalBolehGeser(actor: Session, eventKepId: string, subEventId: string, dari: string, ke: string): Promise<void> {
+  const today = todayWib();
+  if (dari && dari < today) throw new HttpError(409, GESER_LEWAT);
+  if (ke <= today) throw new HttpError(409, GESER_KE_LEWAT);
+  const P = F.pendaftaranEvents;
+  const rows = await listPesertaInScope(actor, [P.pertemuanHadir, P.keterangan], eventKepId, { fresh: true });
+  if (rows.some((r) => ["LULUS", "TIDAK LULUS"].includes(str(r.fields[P.keterangan]).trim().toUpperCase()))) throw new HttpError(409, GESER_HASIL);
+  if (rows.some((r) => ids(r.fields[P.pertemuanHadir]).includes(subEventId))) throw new HttpError(409, GESER_KEHADIRAN);
+}
+
 /**
  * Sets Tanggal, Jam Mulai and Jam Selesai of ONE pertemuan of this KEP (never creates, deletes or reorders pertemuan).
  * PIC of the owning paroki while the KEP is Diajukan or Disetujui, SEP unless it is Ditolak, Admin Paroki 403. Audit first
@@ -218,6 +240,7 @@ export async function updateWaktu(actor: Session, eventKepId: string, subEventId
   if (!ids(sub.fields[F.subEvent.acara]).some((e) => eventIds.includes(e))) throw new HttpError(404);
 
   const cur = waktuOf(sub.fields);
+  if (actor.role !== "SEP" && want.tanggal !== cur.tanggal) await assertTanggalBolehGeser(actor, eventKepId, subEventId, cur.tanggal, want.tanggal);
   const mine = (await waktuMarkers(subEventId)).filter((m) => m.opId === opId);
   const prev = [...mine].sort((a, b) => Number(a.t ?? 0) - Number(b.t ?? 0)).at(-1);
   let aksi = "jadwal_set";

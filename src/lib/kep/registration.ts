@@ -8,7 +8,7 @@ import { mailConfigured, sendMail } from "@/lib/email";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { invalidateKepCache, normEmail, normPhone } from "@/lib/kep/readModel";
 import { cachedList } from "@/lib/airtable/cache";
-import { KEP_FIELDS } from "@/lib/auth/guard";
+import { KEP_FIELDS, listLinkedToEvents } from "@/lib/auth/guard";
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -297,9 +297,19 @@ async function openKeps(eventId: string, now: Date, all: AtRecord[]): Promise<At
   const today = wibDate(now);
   for (const k of keps) {
     const end = str(k.fields[F.eventKep.tanggalSelesai]).slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && today > end) throw new RegistrationClosedError();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && today > end && today > (await lastMeetingDay(eventId, end))) throw new RegistrationClosedError();
   }
   return keps;
+}
+
+/** The later of Tanggal Selesai and the last pertemuan (a rescheduled last meeting keeps registration and walk-ins open). Only read once Tanggal Selesai has passed. */
+async function lastMeetingDay(eventId: string, end: string): Promise<string> {
+  try {
+    const subs = await listLinkedToEvents(T.subEvent, F.subEvent.acara, [F.subEvent.acara, F.subEvent.tanggal], [eventId]);
+    return subs.map((s) => str(s.fields[F.subEvent.tanggal]).slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).reduce((a, b) => (b > a ? b : a), end);
+  } catch {
+    return end; // a failed read must not open a closed KEP
+  }
 }
 
 /** Name and EventID text of one Events row (cached 10 min; the EventID never changes). Null: no such event. */

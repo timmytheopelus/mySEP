@@ -1,3 +1,4 @@
+import { withAirtableDeadline } from "@/lib/airtable/deadline";
 import { runInBackground } from "@/lib/background";
 import { errorResponse, guardPost, clientIp, json, readBody, tooMany } from "@/lib/http/auth-http";
 import { notAvailable, responseFloorMs, validationError } from "@/lib/http/registration-http";
@@ -45,7 +46,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ token: string 
 
     // Row creation happens before the response; email and non-critical audit rows run after it. A floor on the
     // response time evens out the registered / already_registered paths (no timing oracle).
-    await registerPeserta(t.eventId, parsed.data, { defer: runInBackground } /* no account: audit rows carry actorType "publik", Pelaku stays empty */);
+    // Airtable waits end 5 s before maxDuration: a busy base answers a clean 503 + Retry-After, not a platform 504.
+    await withAirtableDeadline(started + (maxDuration - 5) * 1000, () => registerPeserta(t.eventId, parsed.data, { defer: runInBackground } /* no account: audit rows carry actorType "publik", Pelaku stays empty */));
     const floor = responseFloorMs(process.env.REG_MIN_RESPONSE_MS);
     const wait = floor - (Date.now() - started);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));

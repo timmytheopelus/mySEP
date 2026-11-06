@@ -300,6 +300,14 @@ Gerbang pengaman (tidak bisa dilewati):
 - Cache akun sesi (60 detik; dicabut langsung saat nonaktif/ganti peran/ganti password) kini satu per proses, dipakai
   bersama oleh bundel API dan bundel halaman (`globalThis`). Di instance lain pencabutan tetap menunggu sampai 60 detik.
 - Tanpa `RESEND_API_KEY` email tidak terkirim (hanya dicatat di log).
+- Batas waktu Airtable per rute: antrean/jeda 429 tidak pernah menunggu melewati sisa waktu rute (`withAirtableDeadline`).
+  Impor peserta berhenti sebelum `IMPORT_DEADLINE_MS` (default 270000 ms) dan meminta "ulangi"; pendaftaran publik
+  berhenti 5 detik sebelum `maxDuration` dengan 503 + Retry-After.
+- Cache baca: baris terakhir yang berhasil hanya dipakai saat gangguan Airtable maksimal 30 menit; pembacaan
+  "segar" (keputusan tulis) tidak memakai baris lama dan tidak menunggu jeda kegagalan.
+- Jadwal: PIC tidak dapat memindahkan tanggal pertemuan yang sudah lewat atau sudah ada kehadiran, tidak dapat
+  memindahkan tanggal apa pun setelah ada hasil LULUS/TIDAK LULUS, dan tidak dapat memindahkan ke masa lalu (SEP
+  dikecualikan, tercatat di audit dengan peran). Pendaftaran publik tetap terbuka sampai tanggal pertemuan terakhir.
 
 ---
 
@@ -321,3 +329,6 @@ Mohon konfirmasi tertulis (jawaban mengubah matriks `tests/security/matrix.ts`):
 6. **Kunjungan rumah** dicatat sebagai kehadiran pada pertemuan "Kunjungan rumah" di jadwal, bukan field tersendiri. Cukup?
 7. Pertanyaan lain yang masih terbuka di catatan proyek: jadwal 28 pertemuan vs "27" di spesifikasi; apakah acara
    "KEP Exe" ikut dihitung; nama lembaga di footer landing.
+8. **Akses Admin ke data kesehatan dan tambah peserta manual (N3)**: tambah peserta manual mencocokkan seluruh TeamUmat
+   lewat WhatsApp, dan Admin paroki dapat membuka data kesehatan. Keputusan pemilik: dibiarkan; perlu ditinjau bila
+   MFA Admin dijadikan wajib.

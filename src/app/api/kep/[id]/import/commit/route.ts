@@ -8,6 +8,7 @@ import { json, tooMany } from "@/lib/http/auth-http";
 import { importTarget, parseUpload } from "@/lib/kep/importHttp";
 import { RegistrationInputError, registerPeserta } from "@/lib/kep/registration";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
+import { airtableMaxWaitMs, withAirtableDeadline } from "@/lib/airtable/deadline";
 
 export const dynamic = "force-dynamic";
 /**
@@ -19,6 +20,8 @@ export const dynamic = "force-dynamic";
  */
 export const maxDuration = 300;
 const budgetMs = () => Number(process.env.IMPORT_BUDGET_MS) || 240_000;
+/** Hard end of Airtable waits: maxDuration minus a margin for the closing audit rows (IMPORT_DEADLINE_MS overrides, tests). */
+const hardMs = () => Number(process.env.IMPORT_DEADLINE_MS) || 270_000;
 
 type Summary = { registered: number; alreadyRegistered: number; failed: number; failedRows: { row: number; message: string }[]; ulang?: boolean };
 const inflight = new Map<string, Promise<Summary>>();
@@ -74,7 +77,8 @@ export const POST = withAuth<{ id: string }>(
     const running = inflight.get(opId);
     if (running) return json({ ...(await running), ulang: true });
 
-    const run = (async (): Promise<Summary> => {
+    const hardAt = Date.now() + hardMs();
+    const run = withAirtableDeadline(hardAt, async (): Promise<Summary> => {
       const earlier = await previousRun(params.id, opId);
       if (earlier.replay) return { ...earlier.replay, ulang: true };
       if (earlier.running) throw new HttpError(409, "Berkas ini sedang diproses. Tunggu sebentar lalu periksa hasilnya.");
@@ -83,7 +87,8 @@ export const POST = withAuth<{ id: string }>(
       const s: Summary = { registered: 0, alreadyRegistered: 0, failed: parsed.errors.length, failedRows: [...parsed.errors] };
       const started = Date.now();
       for (const item of parsed.items) {
-        if (Date.now() - started > budgetMs()) {
+        // Stop starting rows when the time budget is spent OR less than one worst-case Airtable wait is left before the hard deadline.
+        if (Date.now() - started > budgetMs() || hardAt - Date.now() < airtableMaxWaitMs()) {
           s.failed++;
           transien++;
           s.failedRows.push({ row: item.row, message: "Belum diproses (batas waktu). Unggah ulang berkas yang sama untuk melanjutkan." });
@@ -111,7 +116,7 @@ export const POST = withAuth<{ id: string }>(
         /* registerPeserta dedups per person, so a re-run after a missing "selesai" row is safe */
       }
       return s;
-    })();
+    });
     inflight.set(opId, run);
     try {
       return json(await run);

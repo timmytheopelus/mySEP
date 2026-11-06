@@ -10,9 +10,17 @@ const PUBLIC_TTL_MS = 10 * 60_000;
 const FAIL_BACKOFF_MS = 10_000;
 const cached = cachedList;
 let generation = 0; // any invalidation (report caches, public stats)
-onInvalidate(() => {
+let pubGeneration = 0; // structural changes only (see below)
+// Landing numbers are public aggregates that may be 10 minutes old: routine writes (attendance taps, registrations,
+// jadwal edits) must NEVER trigger the full recompute (it would compete with the taps for the Airtable budget).
+// Only a full drop or a change of KEP / organiser / parish makes them stale (value kept as stale fallback).
+const STRUCTURAL = new Set<string>([T.eventKep, T.penyelenggaraKep, T.paroki, T.events]);
+onInvalidate((table) => {
   generation++;
-  if (pub) pub.at = 0; // value kept as stale fallback; next call recomputes
+  if (table === undefined || STRUCTURAL.has(table)) {
+    pubGeneration++;
+    if (pub) pub.at = 0;
+  }
 });
 
 /** Call after any write to `table` (or without argument to drop everything). */
@@ -424,12 +432,12 @@ export async function publicStats(): Promise<PublicStats> {
     if (v) return v;
     throw pub.err;
   }
-  const gen = generation;
+  const gen = pubGeneration;
   const prev = pub;
   const p = computePublicStats().then(
     (value) => {
       const t = Date.now();
-      pub = { at: gen === generation ? t : 0, value, okAt: t };
+      pub = { at: gen === pubGeneration ? t : 0, value, okAt: t };
       void sharedSetJson(SHARED_KEY, { at: t, value } satisfies Shared, PUBLIC_STALE_MAX_MS / 1000);
       return value;
     },
