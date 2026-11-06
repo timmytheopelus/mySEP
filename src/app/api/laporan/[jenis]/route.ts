@@ -14,8 +14,11 @@ const NO_STORE = { "Cache-Control": "no-store" };
 
 function csvRows(jenis: Jenis, data: unknown): Record<string, unknown>[] {
   if (jenis !== "profil") return data as Record<string, unknown>[];
-  const p = data as Record<string, Record<string, unknown>>;
-  return Object.entries(p).flatMap(([dimensi, m]) => Object.entries(m).map(([kelompok, jumlah]) => ({ dimensi, kelompok, jumlah })));
+  const p = data as { suppressed: boolean } & Record<string, Record<string, unknown>>;
+  if (p.suppressed) return [{ dimensi: "profil", kelompok: "semua", jumlah: "disembunyikan (peserta terlalu sedikit)" }];
+  const { suppressed: _s, ...dims } = p;
+  void _s;
+  return Object.entries(dims).flatMap(([dimensi, m]) => Object.entries(m).map(([kelompok, jumlah]) => ({ dimensi, kelompok, jumlah })));
 }
 
 /**
@@ -40,10 +43,12 @@ export const GET = withAuth(
     }
 
     let data: unknown;
+    let kepId: string | undefined;
     if (jenis === "kehadiran") {
       const kep = url.searchParams.get("kep");
       if (!kep) throw new HttpError(422, "Parameter kep wajib");
       data = await kehadiranPerPertemuan(session, kep);
+      kepId = kep; // validated and scope-checked by the call above
     } else if (jenis === "rekap-angkatan") data = await rekapAngkatan(scope);
     else if (jenis === "tren") data = await trenTahunan(scope);
     else data = await profilPeserta(scope);
@@ -51,7 +56,7 @@ export const GET = withAuth(
     if (format === "json") return new Response(JSON.stringify({ data }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8", ...NO_STORE } });
 
     // audit first, ids only (the report name and the scope id; never rows)
-    await logAudit({ actorEmail: session.email, action: "laporan_unduh", targetId: jenis, after: { jenis, paroki: scope.parokiId, t: Date.now() } });
+    await logAudit({ actorEmail: session.email, action: "laporan_unduh", targetId: jenis, after: { jenis, paroki: scope.parokiId, ...(kepId ? { kepId } : {}), t: Date.now() } });
     return new Response("﻿" + toCsv(csvRows(jenis, data)), {
       status: 200,
       headers: {

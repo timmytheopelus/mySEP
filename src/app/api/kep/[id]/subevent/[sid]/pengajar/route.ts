@@ -14,7 +14,7 @@ const Body = z
   })
   .strict();
 
-/** Replace the pewarta of one pertemuan (PIC of the owning paroki; Diajukan only). */
+/** Replace the pewarta of one pertemuan (PIC of the owning paroki while Diajukan; SEP unless rejected). */
 export const POST = withAuth<{ id: string; sid: string }>(
   async (req, { session, params }) => {
     const lim = await rateLimit(limitKey("pengajar-set", session.accountId), 120, 600);
@@ -23,5 +23,5 @@ export const POST = withAuth<{ id: string; sid: string }>(
     if (!parsed.success) throw new HttpError(422, "Data penugasan tidak valid");
     return json(await assignPengajar(session, params.id, params.sid, parsed.data.pengajarIds, parsed.data.opId));
   },
-  { roles: ["PIC"] },
+  { roles: ["PIC", "SEP"] },
 );

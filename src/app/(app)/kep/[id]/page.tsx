@@ -121,6 +121,16 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </nav>
       ) : null}
 
+      {hub.sepJadwal ? (
+        <nav className={styles.card} aria-label="Menu SEP">
+          <div className={styles.actions}>
+            <Link prefetch={false} className={styles.linkBtn} href={`/kep/${id}/jadwal`}>
+              Atur pewarta (SEP)
+            </Link>
+          </div>
+        </nav>
+      ) : null}
+
       <section className={styles.card} aria-labelledby="h-jadwal">
         <h2 id="h-jadwal" className={styles.h2}>Jadwal pertemuan ({hub.pertemuan.length})</h2>
         {hub.pic ? (

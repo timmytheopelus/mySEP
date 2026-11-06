@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { readSession } from "@/lib/auth/session";
 import { listKepQueue } from "@/lib/kep/approval";
 import { profilPeserta, rekapAngkatan, trenTahunan } from "@/lib/kep/reports";
-import { BarsH, ProfilTabel, Tabel, TrenChart } from "../_components/Charts";
+import { BarsH, ProfilBagian, Tabel, TrenChart } from "../_components/Charts";
 import { Unduh } from "../_components/Unduh";
 import styles from "../dashboard.module.css";
 
@@ -52,9 +52,9 @@ export default async function Page() {
       </ul>
       <Unduh
         links={[
-          { href: "/api/laporan/rekap-angkatan?format=csv", label: "Unduh rekap angkatan" },
-          { href: "/api/laporan/tren?format=csv", label: "Unduh tren tahunan" },
-          { href: "/api/laporan/profil?format=csv", label: "Unduh profil peserta" },
+          { href: "/api/laporan/rekap-angkatan?format=csv", label: "Unduh rekap angkatan", filename: "laporan-rekap-angkatan.csv" },
+          { href: "/api/laporan/tren?format=csv", label: "Unduh tren tahunan", filename: "laporan-tren.csv" },
+          { href: "/api/laporan/profil?format=csv", label: "Unduh profil peserta", filename: "laporan-profil.csv" },
         ]}
       />
 
@@ -84,10 +84,7 @@ export default async function Page() {
       />
 
       <h2>Profil peserta</h2>
-      <p className={styles.muted}>Hanya angka gabungan. Jumlah di bawah 5 ditulis &quot;&lt;5&quot;.</p>
-      <ProfilTabel judul="Kelompok usia" data={profil.kelompokUsia} />
-      <ProfilTabel judul="Jenis kelamin" data={profil.jenisKelamin} />
-      <ProfilTabel judul="Status pernikahan" data={profil.statusPernikahan} />
+      <ProfilBagian profil={profil} />
     </main>
   );
 }

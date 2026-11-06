@@ -11,8 +11,6 @@ const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const day = (v: unknown) => (typeof v === "string" ? v.slice(0, 10) : "");
 const MUNDUR = "MENGUNDURKAN DIRI";
-export const SUPPRESS = "<5";
-export type Count = number | typeof SUPPRESS;
 
 // ---- small cache: the key always carries the scope (and the read-model generation), never shared across scopes ----
 const TTL_MS = 45_000;
@@ -94,14 +92,25 @@ export async function kehadiranPerPertemuan(actor: Session, eventKepId: string):
   return cachedReport(`kehadiran:${eventKepId}`, sc.parokiId, async () => {
     const A = F.auditKep, S = F.subEvent;
     const [courses, subs] = await Promise.all([
-      loadReportCourses(sc, { hadir: true }),
+      loadReportCourses(sc),
       readCached(T.subEvent, [S.agenda, S.acara, S.urutan, S.tanggal]),
     ]);
     const rows = courses.filter((c) => c.linkedKepIds.includes(eventKepId)).flatMap((c) => c.rows).filter((r) => r.eventIds.some((e) => eventIds.includes(e)));
     const mundurIds = new Set(rows.filter((r) => r.keterangan === MUNDUR).map((r) => r.pendaftaranId));
     const mundurDay = new Map<string, string>();
     if (mundurIds.size) {
-      for (const a of await readCached(T.auditKep, [A.aksi, A.targetId, A.sesudah])) {
+      const targets = [...mundurIds].filter((id) => REC_ID.test(id));
+      const parts = Array.from({ length: Math.ceil(targets.length / 15) }, (_, i) => targets.slice(i * 15, (i + 1) * 15));
+      const pages = await Promise.all(
+        parts.map((part) =>
+          readCached(
+            T.auditKep,
+            [A.aksi, A.targetId, A.sesudah],
+            `AND(OR({${A.aksi}}="peserta_mundur",{${A.aksi}}="peserta_mundur_ulang"),OR(${part.map((id) => `{${A.targetId}}="${id}"`).join(",")}))`,
+          ),
+        ),
+      );
+      for (const a of pages.flat()) {
         const aksi = String(a.fields[A.aksi] ?? "");
         const target = String(a.fields[A.targetId] ?? "");
         if ((aksi !== "peserta_mundur" && aksi !== "peserta_mundur_ulang") || !mundurIds.has(target)) continue;
@@ -137,9 +146,17 @@ export async function kehadiranPerPertemuan(actor: Session, eventKepId: string):
 }
 
 // ---- participant profile: aggregates with small-number suppression ----
-export type Profil = { kelompokUsia: Record<string, Count>; jenisKelamin: Record<string, Count>; statusPernikahan: Record<string, Count> };
+export const SUPPRESS = "<5"; // a true count of 0-4
+export const COMPLEMENT = "*"; // hidden only so a "<5" cell cannot be recovered by subtraction
+export type Count = number | typeof SUPPRESS | typeof COMPLEMENT;
+export type Profil =
+  | { suppressed: true }
+  | { suppressed: false; kelompokUsia: Record<string, Count>; jenisKelamin: Record<string, Count>; statusPernikahan: Record<string, Count> };
 const UNKNOWN = "Tidak diketahui";
+export const MIN_PROFIL_N = 10;
 const USIA = ["<20", "20-29", "30-39", "40-49", "50-59", "60+", UNKNOWN];
+const JK = ["Laki-laki", "Perempuan", UNKNOWN];
+const NIKAH = ["Lajang", "Menikah", "Duda", "Janda", "Lainnya", UNKNOWN];
 
 function usiaBucket(lahir: string | null, today: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(lahir ?? "");
@@ -149,37 +166,76 @@ function usiaBucket(lahir: string | null, today: string): string {
   if (age < 0 || age > 120) return UNKNOWN;
   return age < 20 ? "<20" : age < 30 ? "20-29" : age < 40 ? "30-39" : age < 50 ? "40-49" : age < 60 ? "50-59" : "60+";
 }
+function jkBucket(v: string): string {
+  const t = v.trim().toLowerCase();
+  if (!t) return UNKNOWN;
+  if (/^(l\b|laki|pria)/.test(t)) return "Laki-laki";
+  if (/^(p\b|perempuan|wanita)/.test(t)) return "Perempuan";
+  return UNKNOWN;
+}
+function nikahBucket(v: string): string {
+  const t = v.trim().toLowerCase();
+  if (!t) return UNKNOWN;
+  if (/belum|lajang|single/.test(t)) return "Lajang";
+  if (/duda/.test(t)) return "Duda";
+  if (/janda/.test(t)) return "Janda";
+  if (/menikah|kawin|nikah/.test(t)) return "Menikah";
+  return "Lainnya";
+}
 
-/** Buckets of 1-4 become "<5"; if exactly one was hidden the next smallest is hidden too so it cannot be derived. */
-export function suppress(counts: Map<string, number>, order?: string[]): Record<string, Count> {
-  const keys = [...counts.keys()].filter((k) => (counts.get(k) ?? 0) > 0);
-  if (order) keys.sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  else keys.sort((a, b) => (counts.get(b)! - counts.get(a)!) || a.localeCompare(b));
-  const hidden = new Set(keys.filter((k) => counts.get(k)! < 5));
-  if (hidden.size === 1) {
-    const rest = keys.filter((k) => !hidden.has(k));
-    if (rest.length) hidden.add(rest.reduce((m, k) => (counts.get(k)! < counts.get(m)! ? k : m)));
+/**
+ * Every category of the fixed list is always present. Cells of 0-4 become "<5" (zeros too: presence must not imply >= 1).
+ * While anything is hidden, fewer than two cells are hidden or the hidden total is below 5, the smallest visible cell is
+ * hidden as "*" (ties: list order), so no hidden cell can be derived by subtraction.
+ */
+export function suppressDim(counts: Record<string, number>, order: string[]): Record<string, Count> {
+  const n = (k: string) => counts[k] ?? 0;
+  const out: Record<string, Count> = {};
+  const hidden = new Set<string>();
+  for (const k of order) if (n(k) < 5) hidden.add(k);
+  const real = new Set(hidden);
+  while (hidden.size > 0 && (hidden.size < 2 || [...hidden].reduce((a, k) => a + n(k), 0) < 5)) {
+    const visible = order.filter((k) => !hidden.has(k));
+    if (visible.length === 0) break;
+    hidden.add(visible.reduce((m, k) => (n(k) < n(m) ? k : m)));
   }
-  return Object.fromEntries(keys.map((k) => [k, hidden.has(k) ? SUPPRESS : counts.get(k)!]));
+  for (const k of order) out[k] = hidden.has(k) ? (real.has(k) ? SUPPRESS : COMPLEMENT) : n(k);
+  return out;
 }
 
 export async function profilPeserta(scope: Scope): Promise<Profil> {
   const sc = checkScope(scope);
-  return cachedReport("profil", sc, async () => {
+  return cachedReport("profil", sc, async (): Promise<Profil> => {
     const today = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
     const seen = new Set<string>();
-    const usia = new Map<string, number>(), jk = new Map<string, number>(), nikah = new Map<string, number>();
-    const inc = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
-    for (const c of (await loadReportCourses({ parokiId: sc }, { profile: true })).filter(reported)) {
+    const usia: Record<string, number> = {}, jk: Record<string, number> = {}, nikah: Record<string, number> = {};
+    const inc = (m: Record<string, number>, k: string) => (m[k] = (m[k] ?? 0) + 1);
+    for (const c of (await loadReportCourses({ parokiId: sc })).filter(reported)) {
       for (const p of c.peserta) {
         if (seen.has(p.personKey)) continue; // one person, however many angkatan
         seen.add(p.personKey);
         inc(usia, usiaBucket(p.tanggalLahir, today));
-        inc(jk, p.jenisKelamin || UNKNOWN);
-        inc(nikah, p.statusPernikahan || UNKNOWN);
+        inc(jk, jkBucket(p.jenisKelamin));
+        inc(nikah, nikahBucket(p.statusPernikahan));
       }
     }
-    return { kelompokUsia: suppress(usia, USIA), jenisKelamin: suppress(jk), statusPernikahan: suppress(nikah) };
+    if (seen.size < MIN_PROFIL_N) return { suppressed: true };
+    return { suppressed: false, kelompokUsia: suppressDim(usia, USIA), jenisKelamin: suppressDim(jk, JK), statusPernikahan: suppressDim(nikah, NIKAH) };
+  });
+}
+
+export type KepDash = { disetujui: number; aktif: number; kehadiran: { id: string; nama: string }[] };
+/** Approved KEPs, those still running (no end date or end date not past, WIB), and the ones with an attendance report. */
+export async function kepDashboard(scope: Scope): Promise<KepDash> {
+  const sc = checkScope(scope);
+  return cachedReport("kepdash", sc, async () => {
+    const today = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+    const ok = (await loadReportCourses({ parokiId: sc })).filter((c) => c.status === "Disetujui" && c.eventKepId);
+    return {
+      disetujui: ok.length,
+      aktif: ok.filter((c) => !c.tanggalSelesai || c.tanggalSelesai >= today).length,
+      kehadiran: ok.map((c) => ({ id: c.eventKepId!, nama: c.nama || "KEP" })).sort((a, b) => a.nama.localeCompare(b.nama, "id") || a.id.localeCompare(b.id)),
+    };
   });
 }
 

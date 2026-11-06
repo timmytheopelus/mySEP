@@ -15,7 +15,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   if (!session) redirect("/login");
   const { id } = await params;
   if (!/^rec[A-Za-z0-9]{10,}$/.test(id)) notFound();
-  if (session.role !== "PIC") redirect(`/kep/${id}`); // SEP / Admin Paroki read the schedule on the detail page; proposing pewarta is the PIC's job
+  if (session.role !== "PIC" && session.role !== "SEP") redirect(`/kep/${id}`); // Admin Paroki reads the schedule on the detail page
   let jadwal: Jadwal;
   try {
     jadwal = await getJadwal(session, id);
@@ -42,7 +42,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       <h1>Jadwal dan pewarta</h1>
       {jadwal.terkunci ? (
         <p className={styles.lock} data-testid="jadwal-terkunci">
-          Penugasan pewarta terkunci setelah KEP disetujui SEP; halaman ini hanya-baca. Hubungi SEP jika perlu perubahan.
+          {session.role === "SEP" ? "KEP ini ditolak, sehingga penugasan pewarta tidak dapat diubah." : "Penugasan pewarta terkunci setelah KEP disetujui SEP; halaman ini hanya-baca. Hubungi SEP jika perlu perubahan."}
         </p>
       ) : (
         <p className={styles.hint}>

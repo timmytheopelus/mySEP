@@ -24,6 +24,8 @@ export type KepHub = {
   kelola: boolean;
   /** PIC only: pewarta assignment, registration link, manual peserta, import (Admin Paroki: none of these). */
   pic: boolean;
+  /** SEP may set the pewarta of any KEP that is not rejected. */
+  sepJadwal: boolean;
   /** Pewarta assignment is open only while Diajukan. */
   jadwalTerkunci: boolean;
   /** Absen / penetapan need a Disetujui KEP. */
@@ -110,6 +112,7 @@ export async function getKepHub(session: Session, eventKepId: string): Promise<K
     tanggalSelesai: day(rec.fields[F.eventKep.tanggalSelesai]) || null,
     kelola,
     pic: session.role === "PIC",
+    sepJadwal: session.role === "SEP" && status !== "Ditolak",
     jadwalTerkunci: status !== "Diajukan",
     absenTersedia: kelola && status === "Disetujui",
     statistik,

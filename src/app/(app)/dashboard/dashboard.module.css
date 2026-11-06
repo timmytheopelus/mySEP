@@ -1,11 +1,10 @@
-.main {
-  --bg: #fff; --ink: #111; --ink2: #444; --line: #ccc; --card: #f6f7f9; --s1: #2a78d6; --s2: #eb6834; --link: #0b3d91;
-  max-width: 56rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink);
-}
+.main { max-width: 56rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; font-family: system-ui, sans-serif; }
+/* Colour tokens live on the body (not the page box) so a dark page is dark edge to edge. */
+body:has(.main) { --bg: #fff; --ink: #111; --ink2: #444; --line: #ccc; --card: #f6f7f9; --s1: #2a78d6; --s2: #eb6834; --link: #0b3d91; background: var(--bg); color: var(--ink); }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .main { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --line: #4a4a46; --card: #252523; --s1: #3987e5; --s2: #d95926; --link: #8db8ff; }
+  :root:not([data-theme="light"]) body:has(.main) { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --line: #4a4a46; --card: #252523; --s1: #3987e5; --s2: #d95926; --link: #8db8ff; }
 }
-:root[data-theme="dark"] .main { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --line: #4a4a46; --card: #252523; --s1: #3987e5; --s2: #d95926; --link: #8db8ff; }
+:root[data-theme="dark"] body:has(.main) { --bg: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --line: #4a4a46; --card: #252523; --s1: #3987e5; --s2: #d95926; --link: #8db8ff; }
 .main h1 { margin: 0 0 1rem; }
 .main h2 { margin: 2rem 0 0.6rem; font-size: 1.2rem; }
 .muted { color: var(--ink2); margin: 0.2rem 0 0.8rem; }

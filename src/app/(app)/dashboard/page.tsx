@@ -2,9 +2,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { readSession } from "@/lib/auth/session";
 import { HttpError } from "@/lib/http/errors";
-import { listKepIndex } from "@/lib/kep/hub";
-import { profilPeserta, rekapAngkatan, trenTahunan } from "@/lib/kep/reports";
-import { ProfilTabel, Tabel, TrenChart } from "./_components/Charts";
+import { kepDashboard, profilPeserta, rekapAngkatan, trenTahunan } from "@/lib/kep/reports";
+import { ProfilBagian, Tabel, TrenChart } from "./_components/Charts";
 import { Unduh } from "./_components/Unduh";
 import styles from "./dashboard.module.css";
 
@@ -27,8 +26,8 @@ export default async function Page() {
   const scope = { parokiId: session.parokiId };
   let data;
   try {
-    const [rekap, tren, profil, keps] = await Promise.all([rekapAngkatan(scope), trenTahunan(scope), profilPeserta(scope), listKepIndex(session)]);
-    data = { rekap, tren, profil, keps: keps.filter((k) => k.status === "Disetujui") };
+    const [rekap, tren, profil, keps] = await Promise.all([rekapAngkatan(scope), trenTahunan(scope), profilPeserta(scope), kepDashboard(scope)]);
+    data = { rekap, tren, profil, keps };
   } catch (e) {
     if (e instanceof HttpError) throw e;
     return (
@@ -44,16 +43,17 @@ export default async function Page() {
     <main className={styles.main}>
       <h1>Dashboard paroki</h1>
       <ul className={styles.tiles}>
-        <li className={styles.tile}><b>{keps.length}</b><span>KEP disetujui</span></li>
+        <li className={styles.tile}><b>{keps.aktif}</b><span>KEP aktif</span></li>
+        <li className={styles.tile}><b>{keps.disetujui}</b><span>KEP disetujui</span></li>
         <li className={styles.tile}><b>{rekap.length}</b><span>Angkatan tercatat</span></li>
         <li className={styles.tile}><b>{sum((r) => r.peserta)}</b><span>Peserta</span></li>
         <li className={styles.tile}><b>{sum((r) => r.lulus)}</b><span>Lulus</span></li>
       </ul>
       <Unduh
         links={[
-          { href: "/api/laporan/rekap-angkatan?format=csv", label: "Unduh rekap angkatan" },
-          { href: "/api/laporan/tren?format=csv", label: "Unduh tren tahunan" },
-          { href: "/api/laporan/profil?format=csv", label: "Unduh profil peserta" },
+          { href: "/api/laporan/rekap-angkatan?format=csv", label: "Unduh rekap angkatan", filename: "laporan-rekap-angkatan.csv" },
+          { href: "/api/laporan/tren?format=csv", label: "Unduh tren tahunan", filename: "laporan-tren.csv" },
+          { href: "/api/laporan/profil?format=csv", label: "Unduh profil peserta", filename: "laporan-profil.csv" },
         ]}
       />
 
@@ -61,7 +61,7 @@ export default async function Page() {
       <Tabel
         caption="Rekap per angkatan"
         rows={rekap}
-        rowKey={(r) => `${r.paroki}${r.angkatan}`}
+        rowKey={(r) => `${r.paroki}-${r.angkatan}`}
         cols={[
           { head: "Angkatan", cell: (r) => (r.angkatan ? `Angkatan ${r.angkatan}` : "Tanpa nomor") },
           { head: "Peserta", cell: (r) => r.peserta },
@@ -81,15 +81,12 @@ export default async function Page() {
       />
 
       <h2>Profil peserta</h2>
-      <p className={styles.muted}>Hanya angka gabungan. Jumlah di bawah 5 ditulis &quot;&lt;5&quot; untuk menjaga privasi.</p>
-      <ProfilTabel judul="Kelompok usia" data={profil.kelompokUsia} />
-      <ProfilTabel judul="Jenis kelamin" data={profil.jenisKelamin} />
-      <ProfilTabel judul="Status pernikahan" data={profil.statusPernikahan} />
+      <ProfilBagian profil={profil} />
 
-      {keps.length ? (
+      {keps.kehadiran.length ? (
         <>
           <h2>Kehadiran per pertemuan</h2>
-          <Unduh links={keps.map((k) => ({ href: `/api/laporan/kehadiran?kep=${k.id}&format=csv`, label: `Kehadiran ${k.nama}` }))} />
+          <Unduh links={keps.kehadiran.map((k) => ({ href: `/api/laporan/kehadiran?kep=${k.id}&format=csv`, label: `Kehadiran ${k.nama}`, filename: "laporan-kehadiran.csv" }))} />
         </>
       ) : null}
     </main>

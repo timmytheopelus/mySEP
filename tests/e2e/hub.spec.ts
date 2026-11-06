@@ -236,13 +236,21 @@ test.describe("jadwal dan pewarta", () => {
     await page.goto(`/kep/${KEP_A}`);
     await expect(page.getByText(/pewarta terkunci/i).first()).toBeVisible();
   });
-  test("SEP dan PIC paroki lain tidak bisa membuka jadwal", async ({ page }) => {
+  test("PIC paroki lain tidak bisa membuka jadwal; SEP dapat mengatur pewarta setelah disetujui", async ({ page }) => {
     await as(page, "picB");
     expect((await page.goto(`/kep/${KEP_A}/jadwal`))?.status()).toBe(404);
     await page.context().clearCookies();
     await as(page, "sep");
+    await page.goto(`/kep/${KEP_A}`);
+    await expect(page.getByRole("link", { name: /atur pewarta/i })).toHaveAttribute("href", `/kep/${KEP_A}/jadwal`);
     await page.goto(`/kep/${KEP_A}/jadwal`);
-    await expect(page).not.toHaveURL(/\/jadwal$/);
+    await expect(page).toHaveURL(/\/jadwal$/);
+    await expect(page.getByTestId("jadwal-terkunci")).toHaveCount(0);
+    const r = await page.request.post(`/api/kep/${KEP_A}/subevent/${SUB_A_TODAY}/pengajar`, {
+      headers: { "Sec-Fetch-Site": "same-origin" },
+      data: { pengajarIds: [PENGAJAR_1], opId: "op-e2e-sep-0001" },
+    });
+    expect(r.status()).toBe(200);
   });
 });
 

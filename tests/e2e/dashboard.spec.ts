@@ -16,6 +16,9 @@ test.describe("dashboard", () => {
     await expect(page.getByRole("list", { name: "Rekap per angkatan" })).toBeVisible();
     await expect(page.locator("table").first()).toBeHidden();
     await expect(page.getByText(/St\. E2E B|Belum terpetakan/)).toHaveCount(0);
+    await expect(page.getByText("KEP aktif")).toBeVisible();
+    await expect(page.getByText("KEP disetujui")).toBeVisible();
+    await expect(page.getByText(/jumlah peserta terlalu sedikit|kurang dari 5/).first()).toBeVisible();
     expect(await noHScroll(page)).toBe(true);
     await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/dashboard");
     await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.webmanifest");

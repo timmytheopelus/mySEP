@@ -19,13 +19,14 @@ const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((
 export const TERKUNCI = "Jadwal pewarta terkunci setelah disetujui";
 
 /**
- * PIC of the owning paroki only (Admin Paroki 403, SEP 403, other parish 404). Pewarta may be proposed only while the KEP
- * is Diajukan: after approval the PIC could otherwise toggle an assignment to unlock a pewarta's phone number.
+ * PIC of the owning paroki (Admin Paroki 403, other parish 404) while the KEP is Diajukan only: after approval the PIC could
+ * otherwise toggle an assignment to unlock a pewarta's phone number. SEP may edit any KEP that is not Ditolak (audited with its role).
  */
 async function scope(actor: Session, eventKepId: string) {
-  requireRole(actor, ["PIC"]);
+  requireRole(actor, ["PIC", "SEP"]);
   const { eventKep } = await assertKepInScope(actor, eventKepId);
-  return { eventIds: ids(eventKep.fields[F.eventKep.events]), terkunci: str(eventKep.fields[F.eventKep.statusPersetujuan]) !== "Diajukan" };
+  const status = str(eventKep.fields[F.eventKep.statusPersetujuan]);
+  return { eventIds: ids(eventKep.fields[F.eventKep.events]), terkunci: actor.role === "SEP" ? status === "Ditolak" : status !== "Diajukan" };
 }
 
 export type JadwalItem = { id: string; urutan: number; agenda: string; tanggal: string; pengajarIds: string[] };
@@ -105,7 +106,7 @@ export async function assignPengajar(actor: Session, eventKepId: string, subEven
     action: aksi,
     targetId: subEventId,
     before: { ids: cur },
-    after: { opId, t: Date.now(), kepId: eventKepId, ids: want },
+    after: { opId, t: Date.now(), kepId: eventKepId, ids: want, role: actor.role },
     opId,
   });
   const fail = async (e: unknown): Promise<never> => {

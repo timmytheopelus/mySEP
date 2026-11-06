@@ -169,6 +169,9 @@ const toKepEvent = (c: KepEvent): KepEvent => ({
   pesertaCount: c.pesertaCount,
 });
 type Course = KepEvent & {
+  nama: string;
+  /** Latest end date over the linked KEPs; null when any of them has none (then it never ends). */
+  tanggalSelesai: string | null;
   /** Organizer parish ids per linked EventKEP (a KEP without organizer is an empty list). */
   kepParokis: string[][];
   linkedKepIds: string[];
@@ -203,7 +206,7 @@ async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {
   const [events, keps, orgs, paroki, people] = await Promise.all([
     // only Kelompok Acara = KEP (exact select choice; "KEP Exe" etc. excluded again in code)
     cached(T.events, [F.events.namaAcara, F.events.tanggalAcara, F.events.kelompokAcara, EVENT_ID_FIELD], `{${F.events.kelompokAcara}}='KEP'`),
-    cached(T.eventKep, [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan]),
+    cached(T.eventKep, [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan, F.eventKep.tanggalSelesai]),
     cached(T.penyelenggaraKep, [F.penyelenggaraKep.paroki]),
     cached(T.paroki, [F.paroki.nama]),
     cached(T.teamUmat, [F.teamUmat.noWhatsapp, F.teamUmat.email, F.teamUmat.namaLengkap, ...(opts.peopleFields ?? [])]),
@@ -243,7 +246,10 @@ async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {
           : "Diajukan"; // linked but empty/unknown status: pending, never public
     const angkatan = parseAngkatan(name);
     const byName = parokiByName.get(parishFromName(name));
+    const ends = linkedKeps.map((k) => str(k.fields[F.eventKep.tanggalSelesai]).slice(0, 10));
     raw.push({
+      nama: name,
+      tanggalSelesai: ends.length && ends.every(Boolean) ? ends.sort().at(-1)! : null,
       eventId: ev.id,
       eventKepId: linkedKeps[0]?.id ?? null,
       parokiId,
@@ -292,6 +298,8 @@ async function load(opts: { pendFields?: string[]; peopleFields?: string[] } = {
     )[0];
     return {
       ...toKepEvent(best),
+      nama: best.nama,
+      tanggalSelesai: best.tanggalSelesai,
       kepParokis: best.kepParokis,
       linkedKepIds: [...new Set(g.flatMap((x) => x.linkedKepIds))].sort(),
       memberEventIds: g.map((x) => x.eventId),
@@ -338,6 +346,8 @@ export type ReportPeserta = {
 };
 export type ReportCourse = {
   eventKepId: string | null;
+  nama: string;
+  tanggalSelesai: string | null;
   linkedKepIds: string[];
   parokiId: string | null;
   parokiNama: string;
@@ -355,14 +365,12 @@ const OUTCOME_RANK: Record<string, number> = { LULUS: 3, "TIDAK LULUS": 2, "MENG
  * Courses inside `scope` (same rule as listKepEvents: a paroki needs EVERY linked KEP to list it, the unmapped
  * bucket is for scope ALL only) with their anonymous peserta rows. Scope is applied here, before any row leaves.
  */
-export async function loadReportCourses(
-  scope: { parokiId: string | "ALL" },
-  opts: { profile?: boolean; hadir?: boolean } = {},
-): Promise<ReportCourse[]> {
+export async function loadReportCourses(scope: { parokiId: string | "ALL" }): Promise<ReportCourse[]> {
   const U = F.teamUmat, P = F.pendaftaranEvents;
   const { pendByEvent, people, courses, ident } = await load({
-    pendFields: opts.hadir ? [P.pertemuanHadir] : [],
-    peopleFields: opts.profile ? [U.jenisKelamin, U.tanggalLahir, U.statusPernikahan] : [],
+    // one fixed field set per table: every report shares the same cached reads
+    pendFields: [P.pertemuanHadir],
+    peopleFields: [U.jenisKelamin, U.tanggalLahir, U.statusPernikahan],
   });
   const byId = new Map(people.map((p) => [p.id, p]));
   const view = (r: AtRecord): ReportPeserta => {
@@ -386,6 +394,8 @@ export async function loadReportCourses(
     );
     const peserta = ident.cluster(all).map((g) => view([...g].sort((a, b) => (OUTCOME_RANK[str(b.fields[P.keterangan]).toUpperCase()] ?? 0) - (OUTCOME_RANK[str(a.fields[P.keterangan]).toUpperCase()] ?? 0))[0]));
     out.push({
+      nama: c.nama,
+      tanggalSelesai: c.tanggalSelesai,
       eventKepId: c.eventKepId,
       linkedKepIds: c.linkedKepIds,
       parokiId: c.parokiId,
