@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { productionConfigProblems } from "@/lib/config/prodEnv";
+import { airtableApiUrl, e2eRelaxed, memoryStoreAllowed, productionConfigProblems } from "@/lib/config/prodEnv";
 import { isKeyRevoked, rateLimit, resetRateLimitMemory, revokeKey } from "@/lib/ratelimit";
 import { proxy } from "@/proxy";
 
@@ -52,6 +52,50 @@ describe("productionConfigProblems", () => {
     expect(onVercel).toContain("AIRTABLE_API_URL");
     expect(onVercel).toContain("APP_BASE_URL");
   });
+});
+
+describe("I4: KEP_E2E_MODE is impossible outside local tests", () => {
+  const E2E = { ...GOOD, UPSTASH_REDIS_REST_URL: "", UPSTASH_REDIS_REST_TOKEN: "", AIRTABLE_API_URL: "http://127.0.0.1:4010", APP_BASE_URL: "http://localhost:3000", KEP_E2E_MODE: "1" };
+  it.each([
+    ["127.0.0.1", "http://127.0.0.1:4010", true],
+    ["localhost", "http://localhost:4010/v0", true],
+    ["::1", "http://[::1]:4010", true],
+    ["a public host", "https://evil.example/v0", false],
+    ["a lookalike", "http://127.0.0.1.evil.example", false],
+    ["a userinfo trick", "http://localhost@evil.example", false],
+    ["missing", "", false],
+    ["garbage", "not a url", false],
+  ])("AIRTABLE_API_URL on %s (%s) -> relaxed %s", (_n, url, ok) => {
+    const env = { ...E2E, AIRTABLE_API_URL: url };
+    expect(e2eRelaxed(env)).toBe(ok);
+    if (!ok) {
+      expect(productionConfigProblems(env).join()).toContain("KEP_E2E_MODE");
+      expect(memoryStoreAllowed(env)).toBe(false);
+      expect(airtableApiUrl(env)).toBe("https://api.airtable.com/v0"); // the token never goes off-box
+    } else expect(productionConfigProblems(env)).toEqual([]);
+  });
+  it.each(["VERCEL", "VERCEL_ENV", "VERCEL_URL"])("any %s env var refuses relaxed mode and gates startup (503)", (v) => {
+    const env = { ...E2E, [v]: "1" };
+    expect(e2eRelaxed(env)).toBe(false);
+    expect(productionConfigProblems(env).join()).toContain("KEP_E2E_MODE");
+    expect(airtableApiUrl(env)).toBe("https://api.airtable.com/v0");
+  });
+  it("a non-local APP_BASE_URL refuses relaxed mode", () => {
+    const env = { ...E2E, APP_BASE_URL: "https://kep.example.org" };
+    expect(e2eRelaxed(env)).toBe(false);
+    expect(productionConfigProblems(env).join()).toContain("KEP_E2E_MODE");
+  });
+  it("KEP_E2E_MODE with any other value than '1' is a problem in production too; unset is fine", () => {
+    expect(productionConfigProblems({ ...GOOD, KEP_E2E_MODE: "true" }).join()).toContain("KEP_E2E_MODE");
+    expect(productionConfigProblems({ ...GOOD, KEP_E2E_MODE: "" })).toEqual([]);
+    expect(productionConfigProblems(GOOD)).toEqual([]);
+  });
+  it("outside production nothing changes (dev and unit tests keep the memory store and the URL override)", () => {
+    expect(productionConfigProblems({ NODE_ENV: "development", KEP_E2E_MODE: "1", VERCEL: "1" })).toEqual([]);
+    expect(memoryStoreAllowed({ NODE_ENV: "test" })).toBe(true);
+    expect(airtableApiUrl({ NODE_ENV: "test", AIRTABLE_API_URL: "http://mock.local/v0" })).toBe("http://mock.local/v0");
+  });
+  it("the playwright webServer env (localhost mock, no Vercel vars) stays relaxed", () => expect(e2eRelaxed(E2E)).toBe(true));
 });
 
 describe("proxy refuses to serve a misconfigured production deployment", () => {
