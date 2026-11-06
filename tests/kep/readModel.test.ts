@@ -279,10 +279,10 @@ describe("fix round 1: public visibility and small cells", () => {
     expect((await listKepEvents({ parokiId: "ALL" })).find((e) => e.eventId === "recEVNOSTAT0000001")!.status).toBe("Diajukan");
     expect((await publicStats()).angkatan).toBe(3);
   });
-  it("suppresses per-parish values below 3 but keeps totals honest", async () => {
+  it("shows a low latest angkatan as is (ordinal label) and keeps totals honest", async () => {
     addCourse({ ev: "recEVSMALL00000001", name: "KEP PAROKI ZZ ANGKATAN 2", kep: [{ id: "recKEPSMALL000001", orgs: ["recORGZZ00000001"], status: "Disetujui" }] });
     const s = await publicStats();
-    expect(s.daftarParoki).toContainEqual({ nama: "Paroki ZZ", angkatan: "<3" });
+    expect(s.daftarParoki).toContainEqual({ nama: "Paroki ZZ", angkatan: 2 });
     expect(s.paroki).toBe(3);
     expect(s.angkatan).toBe(4);
   });
