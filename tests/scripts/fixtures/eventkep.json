@@ -1,0 +1,6 @@
+[
+  { "id": "recKEP_L18", "fields": { "fldSavviLVAE5xkxc": ["recORG_LAUR"], "fldQkxnFnG4pgjhs0": 18 } },
+  { "id": "recKEP_G5", "fields": { "fldSavviLVAE5xkxc": ["recORG_GAN"], "fldQkxnFnG4pgjhs0": 5 } },
+  { "id": "recKEP_KR3", "fields": { "fldSavviLVAE5xkxc": ["recORG_KR"], "fldQkxnFnG4pgjhs0": 3, "fldyZwU5mLOjjatLs": ["recEV_KR3"] } },
+  { "id": "recKEP_P2", "fields": { "fldSavviLVAE5xkxc": ["recORG_UNK"], "fldQkxnFnG4pgjhs0": 2 } }
+]

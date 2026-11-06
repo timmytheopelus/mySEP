@@ -106,6 +106,9 @@ export const F = {
   },
   babKep: {
     bab: "fldXsQ5MvJsUpVMYd", // singleSelect "Bab" name (read only; table is not in ALLOWED)
+    tanggal: "fldgOrwm781Aix64w", // date (read only; used by scripts/map-legacy.ts)
+    pengajar: "fldWmgPEIYE1mOtVQ", // link to Data Pengajar KEP
+    eventKep: "fldad1ruhQphCh5x8", // link to EventKEP
   },
   subEvent: {
     agenda: "fld6n7fszdA2YmmzM",

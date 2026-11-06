@@ -1,0 +1,6 @@
+[
+  { "id": "recORG_LAUR", "fields": { "fldIrpPwvByuQjm1a": "Laurentius" } },
+  { "id": "recORG_GAN", "fields": { "fldIrpPwvByuQjm1a": "Paroki Ganesha" } },
+  { "id": "recORG_UNK", "fields": { "fldIrpPwvByuQjm1a": "Paulus" } },
+  { "id": "recORG_KR", "fields": { "fldIrpPwvByuQjm1a": "Kristus Raja", "fld2sPNpixsNArdjf": ["recPAR_GAN"] } }
+]

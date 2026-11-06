@@ -1,0 +1,9 @@
+[
+  { "id": "recBAB1", "fields": { "fldXsQ5MvJsUpVMYd": "Bab 1 Orientasi Evangelisasi", "fldgOrwm781Aix64w": "2024-03-02", "fldWmgPEIYE1mOtVQ": ["recPJ1"], "fldad1ruhQphCh5x8": ["recKEP_G5"] } },
+  { "id": "recBAB2", "fields": { "fldXsQ5MvJsUpVMYd": "Peneguhan", "fldgOrwm781Aix64w": "2024-02-24", "fldad1ruhQphCh5x8": ["recKEP_G5"] } },
+  { "id": "recBAB3", "fields": { "fldXsQ5MvJsUpVMYd": "Bab 1 Orientasi Evangelisasi", "fldgOrwm781Aix64w": "2024-05-04", "fldad1ruhQphCh5x8": ["recKEP_KR3"] } },
+  { "id": "recBAB4", "fields": { "fldXsQ5MvJsUpVMYd": "Bab 2 Evangelisasi Pendalaman", "fldgOrwm781Aix64w": "2024-05-11", "fldad1ruhQphCh5x8": ["recKEP_KR3"] } },
+  { "id": "recBAB5", "fields": { "fldXsQ5MvJsUpVMYd": "Bab 1 Orientasi Evangelisasi", "fldad1ruhQphCh5x8": ["recKEP_P2"] } },
+  { "id": "recBAB6", "fields": { "fldXsQ5MvJsUpVMYd": "Bab 1 Orientasi Evangelisasi", "fldad1ruhQphCh5x8": ["recKEP_L18"] } },
+  { "id": "recBAB7", "fields": { "fldXsQ5MvJsUpVMYd": "Misa Pembukaan", "fldgOrwm781Aix64w": "2024-05-01", "fldad1ruhQphCh5x8": ["recKEP_KR3"] } }
+]

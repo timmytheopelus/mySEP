@@ -8,3 +8,4 @@ next-env.d.ts
 .superpowers/
 test-results
 playwright-report
+reports/
