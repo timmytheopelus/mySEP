@@ -76,7 +76,12 @@ export function getCookie(cookieHeader: string, name: string): string | null {
 
 // Account liveness cache: deactivating an account revokes sessions within ACCOUNT_CACHE_MS.
 type Live = { at: number; session: Session | null; pf: string; sv: string };
-const live = new Map<string, Live>();
+// One cache per PROCESS, not per module instance: the production build bundles route handlers and server components
+// separately (two copies of this module in one process). A deactivation / role change through an API route must
+// reach the page bundle at once, so both copies share the same Map through globalThis (same technique as the read cache).
+const LIVE_KEY = Symbol.for("kep.auth.accountCache.v1");
+const LG = globalThis as unknown as Record<symbol, Map<string, Live> | undefined>;
+const live: Map<string, Live> = (LG[LIVE_KEY] ??= new Map<string, Live>());
 export function clearSessionCache(): void {
   live.clear();
 }
