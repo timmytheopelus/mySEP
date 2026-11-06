@@ -3,6 +3,7 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { decryptSecret, verifyTotp } from "@/lib/auth/totp";
 import {
   getAccountByEmail,
+  hasUsablePassword,
   mfaRequired,
   normalizeEmail,
   recordFailure,
@@ -75,7 +76,7 @@ export async function POST(req: Request): Promise<Response> {
   const acc = await getAccountByEmail(email);
 
   // Locked is checked BEFORE the password is verified; every non-attempt path still burns one hash.
-  if (!acc || !acc.passwordHash || isLocked(acc.lockedUntil, now)) {
+  if (!acc || !acc.passwordHash || !hasUsablePassword(acc) || isLocked(acc.lockedUntil, now)) {
     await verifyPassword(await getDummyHash(), password);
     return fail();
   }

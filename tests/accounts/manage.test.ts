@@ -280,6 +280,7 @@ describe("round 1 fixes", () => {
     expect(await status(changeAccount(sepA, pic.accountId, { role: "SEP", parokiId: null }, STEP))).toBe(403);
     expect(row(pic.accountId).fields[A.peran]).toBe("PIC Paroki");
     row(pic.accountId).fields[A.idGoogle] = "g-sub-1";
+    row(pic.accountId).fields[A.rahasiaMfa] = "x";
     deny();
     expect(await status(clearGoogleBinding(sepA, pic.accountId, STEP))).toBe(403);
     expect(row(pic.accountId).fields[A.idGoogle]).toBe("g-sub-1");
@@ -358,8 +359,9 @@ describe("SEP account administration", () => {
     expect(await status(deactivateAccount(sepA, sepA.accountId))).toBe(409);
     expect(await status(changeAccount(sepA, sepA.accountId, { role: "PIC", parokiId: PA }))).toBe(409);
     expect(row(sepA.accountId).fields[A.statusAktif]).toBe(true);
-    // with a second active SEP the same actions are fine
+    // with a second active SEP the same actions are fine (once it has set its password again)
     await reactivateAccount(sepA, sepB.accountId);
+    row(sepB.accountId).fields[A.hashPassword] = "$argon2id$placeholder-set-by-user";
     await deactivateAccount(sepB, sepA.accountId);
     expect(row(sepA.accountId).fields[A.statusAktif]).toBe(false);
   });

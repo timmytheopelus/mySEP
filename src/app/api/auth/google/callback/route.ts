@@ -50,7 +50,7 @@ async function linkCallback(req: Request, params: { code: string; state: string 
     if (!r.ok) return bad();
     invalidateAccount(meta.session.accountId);
     // The Google binding is part of the session version: keep this user logged in.
-    const token = await issueSession(meta.session, { startedAt: meta.startedAt, amr: meta.amr });
+    const token = await issueSession(meta.session, { startedAt: meta.startedAt, amr: meta.amr, jti: meta.jti });
     return redirect("/profil?google=ok", [clearFlow(), sessionCookie(token)]);
   } catch {
     console.error("google link callback failed");

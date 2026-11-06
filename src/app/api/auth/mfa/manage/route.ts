@@ -1,6 +1,7 @@
 import { decryptSecret, encryptSecret, generateTotpSecret, verifyTotp } from "@/lib/auth/totp";
 import { getAccountById, recordFailure, saveMfaEnrollment, writeAudit, type Account } from "@/lib/accounts/repo";
 import { isLocked, nextFailureState } from "@/lib/auth/lockout";
+import { reauthenticate } from "@/lib/auth/reauth";
 import { enrollmentPayload } from "@/lib/auth/enrollment";
 import { withAuth } from "@/lib/auth/guard";
 import { invalidateAccount, issueSession, readSessionMeta, sessionCookie } from "@/lib/auth/session";
@@ -48,6 +49,7 @@ export const POST = withAuth(
     if (isLocked(acc.lockedUntil, new Date())) throw new HttpError(429);
 
     const enrolled = acc.mfaSecretEnc !== null;
+    let currentStep: number | null = null;
     if (enrolled) {
       const lim = await rateLimit(limitKey("mfa-manage-cur", acc.id), 5, WINDOW_S);
       if (!lim.ok) return tooMany(lim.retryAfter);
@@ -58,7 +60,8 @@ export const POST = withAuth(
       } catch {
         throw new HttpError(403);
       }
-      if (verifyTotp(current, b.currentCode, acc.lastTotpStep) === null) {
+      currentStep = verifyTotp(current, b.currentCode, acc.lastTotpStep);
+      if (currentStep === null) {
         countFailure(acc);
         throw new HttpError(403, "Kode autentikator saat ini salah");
       }
@@ -77,13 +80,19 @@ export const POST = withAuth(
       throw new HttpError(400, "Kode salah");
     }
 
+    // First enrollment: a session alone must not be able to bind an authenticator, so the account password
+    // is required as well (an Admin who never set one cannot self-enroll; a SEP resets/invites instead).
+    if (!enrolled && !(await reauthenticate(acc, { password: b.password }))) throw new HttpError(403, "Password salah");
+
     const meta = await readSessionMeta(req.headers.get("cookie") ?? "");
     if (!meta) throw new HttpError(401);
     await writeAudit({ aksi: enrolled ? "mfa_ganti" : "mfa_daftar", pelaku: acc.email, targetId: acc.id });
-    await saveMfaEnrollment(acc.id, encryptSecret(secret), step);
+    // Persist the highest step used (current code consumed, new code consumed): replays of either are refused.
+    await saveMfaEnrollment(acc.id, encryptSecret(secret), Math.max(step, currentStep ?? 0));
     invalidateAccount(acc.id);
     // The secret is part of the session version: re-issue so the user's own change does not log them out.
     const token = await issueSession(session, {
+      jti: meta.jti,
       startedAt: meta.startedAt,
       amr: Array.from(new Set([...meta.amr, "otp" as const])),
     });

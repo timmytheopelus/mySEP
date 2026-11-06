@@ -1,6 +1,6 @@
 import { listRecords } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
-import { listAllAccounts } from "@/lib/accounts/repo";
+import { hasUsablePassword, listAllAccounts } from "@/lib/accounts/repo";
 import { createAccount } from "@/lib/accounts/manage";
 import { withAuth } from "@/lib/auth/guard";
 import { json, readBody } from "@/lib/http/auth-http";
@@ -26,7 +26,7 @@ export const GET = withAuth(
           aktif: a.active,
           googleTerhubung: a.googleSub !== null,
           mfa: a.mfaSecretEnc !== null,
-          passwordSudahDiatur: a.passwordHash !== null,
+          passwordSudahDiatur: hasUsablePassword(a),
         }))
         .sort((x, y) => x.email.localeCompare(y.email)),
     });
@@ -43,7 +43,7 @@ export const POST = withAuth(
       nama: b.nama as string,
       role: b.role as "SEP",
       parokiId: (b.parokiId ?? null) as string | null,
-    });
+    }, { code: b.code });
     return json({ id: acc.id, email: acc.email, nama: acc.nama, role: acc.role, parokiId: acc.parokiId, undanganTerkirim: acc.inviteSent }, 201);
   },
   { roles: ["SEP"] },

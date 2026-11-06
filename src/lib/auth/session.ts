@@ -1,6 +1,7 @@
 import "server-only";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
+import { isKeyRevoked, limitKey, revokeKey } from "@/lib/ratelimit";
 import { getAccountById, mfaRequired, type Account, type Role } from "@/lib/accounts/repo";
 
 export type { Role };
@@ -26,7 +27,8 @@ const PURPOSE_ENROLL = "mfa_enroll";
 const PURPOSE_VERIFY = "mfa_verify";
 export type PreauthPurpose = "mfa_enroll" | "mfa_verify";
 export type PreauthVia = "pwd" | "google";
-const REQUIRED = ["exp", "iat", "sub"];
+const REQUIRED = ["exp", "iat", "sub", "jti"];
+const PREAUTH_REQUIRED = ["exp", "iat", "sub"];
 
 function secretKey(): Uint8Array {
   const s = process.env.SESSION_SECRET;
@@ -39,7 +41,7 @@ const nowS = () => Math.floor(Date.now() / 1000);
 /** JWT HS256, 15 minutes, never beyond `startedAt` + 8 hours. `amr` records how the user authenticated. */
 export async function issueSession(
   session: Session,
-  opts: { startedAt?: number; amr?: Amr[]; pf?: string; sv?: string } = {},
+  opts: { startedAt?: number; amr?: Amr[]; pf?: string; sv?: string; jti?: string } = {},
 ): Promise<string> {
   // `pf` binds the session to the current password hash, `sv` to role/paroki/Google/MFA state: a reset or
   // an administrative change voids older sessions.
@@ -57,6 +59,7 @@ export async function issueSession(
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setSubject(session.accountId)
+    .setJti(opts.jti ?? randomBytes(16).toString("base64url")) // session id: stays the same across renewals
     .setAudience(AUD_SESSION)
     .setIssuedAt(iat)
     .setExpirationTime(exp)
@@ -96,10 +99,10 @@ async function liveSession(accountId: string): Promise<{ session: Session; pf: s
 
 async function resolve(
   cookieHeader: string,
-): Promise<{ session: Session; startedAt: number; amr: Amr[]; pf: string; sv: string } | null> {
+): Promise<{ session: Session; startedAt: number; amr: Amr[]; pf: string; sv: string; jti: string } | null> {
   const token = getCookie(cookieHeader ?? "", SESSION_COOKIE);
   if (!token) return null;
-  let sub: string, startedAt: number, amr: Amr[], tokenPf: string, tokenSv: string;
+  let jti: string, sub: string, startedAt: number, amr: Amr[], tokenPf: string, tokenSv: string;
   try {
     const { payload } = await jwtVerify(token, secretKey(), {
       algorithms: ["HS256"],
@@ -108,6 +111,8 @@ async function resolve(
       requiredClaims: REQUIRED,
     });
     if (!payload.sub || typeof payload.sa !== "number" || typeof payload.pf !== "string" || typeof payload.sv !== "string" || !Array.isArray(payload.amr)) return null;
+    if (!payload.jti) return null;
+    jti = payload.jti;
     sub = payload.sub;
     startedAt = payload.sa;
     tokenPf = payload.pf;
@@ -116,6 +121,7 @@ async function resolve(
   } catch {
     return null;
   }
+  if (await isKeyRevoked(revocationKey(jti))) return null;
   const liveS = await liveSession(sub);
   if (!liveS) return null;
   // Password reset/change since this token was issued: void it.
@@ -125,7 +131,7 @@ async function resolve(
   const session = liveS.session;
   // SEP/PIC need a second factor: a token minted without OTP is void if the live role requires it.
   if (mfaRequired(session.role) && !amr.includes("otp")) return null;
-  return { session, startedAt, amr, pf: tokenPf, sv: tokenSv };
+  return { session, startedAt, amr, pf: tokenPf, sv: tokenSv, jti };
 }
 
 export async function readSession(cookieHeader: string): Promise<Session | null> {
@@ -135,13 +141,33 @@ export async function readSession(cookieHeader: string): Promise<Session | null>
 /** Valid session plus a fresh token (sliding expiry, capped at 8 h from first login). */
 export async function renewSession(cookieHeader: string): Promise<{ session: Session; token: string } | null> {
   const r = await resolve(cookieHeader);
-  return r ? { session: r.session, token: await issueSession(r.session, { startedAt: r.startedAt, amr: r.amr, pf: r.pf, sv: r.sv }) } : null;
+  return r ? { session: r.session, token: await issueSession(r.session, { startedAt: r.startedAt, amr: r.amr, pf: r.pf, sv: r.sv, jti: r.jti }) } : null;
+}
+
+const revocationKey = (jti: string) => limitKey("session-revoked", jti);
+
+/**
+ * Server-side logout: denylists this session id until its absolute end (start + 8 h). Renewals keep the
+ * same id, so a copied token and every renewal of it die together. Returns false when no valid token or
+ * the store could not be written.
+ */
+export async function revokeSession(cookieHeader: string): Promise<boolean> {
+  const token = getCookie(cookieHeader ?? "", SESSION_COOKIE);
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify(token, secretKey(), { algorithms: ["HS256"], issuer: ISSUER, audience: AUD_SESSION, requiredClaims: REQUIRED });
+    if (!payload.jti || typeof payload.sa !== "number") return false;
+    const ttl = payload.sa + SESSION_MAX_S - nowS();
+    return ttl > 0 ? await revokeKey(revocationKey(payload.jti), ttl) : true;
+  } catch {
+    return false;
+  }
 }
 
 /** What a still-valid session proves; used to re-issue the cookie after the user's own security change. */
-export async function readSessionMeta(cookieHeader: string): Promise<{ session: Session; startedAt: number; amr: Amr[] } | null> {
+export async function readSessionMeta(cookieHeader: string): Promise<{ session: Session; startedAt: number; amr: Amr[]; jti: string } | null> {
   const r = await resolve(cookieHeader);
-  return r ? { session: r.session, startedAt: r.startedAt, amr: r.amr } : null;
+  return r ? { session: r.session, startedAt: r.startedAt, amr: r.amr, jti: r.jti } : null;
 }
 
 /** Fingerprint of the account state a session is valid for (everything except the password, see `pf`). */
@@ -205,7 +231,7 @@ export async function readPreauth(cookieHeader: string, purpose: PreauthPurpose 
       algorithms: ["HS256"],
       issuer: ISSUER,
       audience: AUD_PREAUTH,
-      requiredClaims: REQUIRED,
+      requiredClaims: PREAUTH_REQUIRED,
     });
     if (!payload.sub || payload.purpose !== purpose || typeof payload.pf !== "string" || typeof payload.oi !== "number") {
       return null;

@@ -34,7 +34,7 @@ export default function ProfilClient({ google }: { google?: "ok" | "gagal" }) {
 
   async function finishEnroll(e: FormEvent) {
     e.preventDefault();
-    const r = await post("/api/auth/mfa/manage", { pending: enroll?.pending, code, ...(current ? { currentCode: current } : {}) });
+    const r = await post("/api/auth/mfa/manage", { pending: enroll?.pending, code, ...(current ? { currentCode: current, password: current } : {}) });
     setMsg(r.ok ? "Autentikator tersimpan." : r.data.error ?? "Gagal");
     if (r.ok) setEnroll(null);
   }
@@ -50,7 +50,7 @@ export default function ProfilClient({ google }: { google?: "ok" | "gagal" }) {
       <h2>Autentikator (MFA)</h2>
       {!enroll ? (
         <form className={styles.form} onSubmit={startEnroll}>
-          <input className={styles.input} inputMode="numeric" maxLength={6} placeholder="Kode saat ini (jika sudah terdaftar)" value={current} onChange={(e) => setCurrent(e.target.value)} />
+          <input className={styles.input} placeholder="Kode saat ini (sudah terdaftar) atau password akun (pendaftaran pertama)" value={current} onChange={(e) => setCurrent(e.target.value)} />
           <button className={styles.button} type="submit">Daftarkan / ganti autentikator</button>
         </form>
       ) : (

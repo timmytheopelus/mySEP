@@ -1,6 +1,6 @@
 export class HttpError extends Error {
   constructor(
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 429,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 503,
     message?: string,
   ) {
     super(message ?? DEFAULT[status]);
@@ -15,4 +15,5 @@ const DEFAULT = {
   409: "Konflik data",
   422: "Data tidak valid",
   429: "Terlalu banyak percobaan",
+  503: "Layanan sementara tidak tersedia",
 } as const;

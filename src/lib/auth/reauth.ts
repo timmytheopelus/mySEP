@@ -1,5 +1,5 @@
 import "server-only";
-import { recordFailure, saveTotpStep, type Account } from "@/lib/accounts/repo";
+import { hasUsablePassword, recordFailure, saveTotpStep, type Account } from "@/lib/accounts/repo";
 import { isLocked, nextFailureState } from "@/lib/auth/lockout";
 import { verifyPassword } from "@/lib/auth/password";
 import { decryptSecret, verifyTotp } from "@/lib/auth/totp";
@@ -28,7 +28,7 @@ export async function reauthenticate(acc: Account, input: { code?: unknown; pass
         ok = true;
       }
     }
-  } else if (typeof input.password === "string" && acc.passwordHash) {
+  } else if (typeof input.password === "string" && hasUsablePassword(acc) && acc.passwordHash) {
     ok = await verifyPassword(acc.passwordHash, input.password);
   }
   if (!ok) {

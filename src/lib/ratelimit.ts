@@ -15,8 +15,61 @@ const mem = new Map<string, { count: number; resetAt: number }>();
 const UPSTASH_TIMEOUT_MS = 3000;
 const FAIL_CLOSED_RETRY_S = 30;
 
+const revoked = new Map<string, number>();
+
 export function resetRateLimitMemory(): void {
   mem.clear();
+  revoked.clear();
+}
+
+/**
+ * Revocation denylist (server-side logout) on the same shared store as the limiter: Upstash when configured
+ * (SET key EX ttl / GET), else per-process memory. An Upstash error FAILS CLOSED on read (treated as revoked)
+ * and is reported to the caller on write.
+ */
+export async function revokeKey(key: string, ttlS: number): Promise<boolean> {
+  const ttl = Math.max(1, Math.ceil(ttlS));
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    revoked.set(key, Date.now() + ttl * 1000);
+    return true;
+  }
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, "")}/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify([["SET", key, "1", "EX", ttl]]),
+      signal: AbortSignal.timeout(UPSTASH_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function isKeyRevoked(key: string): Promise<boolean> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    const until = revoked.get(key);
+    if (until !== undefined && until <= Date.now()) revoked.delete(key);
+    return until !== undefined && until > Date.now();
+  }
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, "")}/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify([["GET", key]]),
+      signal: AbortSignal.timeout(UPSTASH_TIMEOUT_MS),
+    });
+    if (!res.ok) return true;
+    const out = (await res.json()) as { result?: unknown; error?: string }[];
+    if (out[0]?.error) return true;
+    return out[0]?.result !== null && out[0]?.result !== undefined;
+  } catch {
+    return true;
+  }
 }
 
 /** Hash identifiers (emails, IPs) so no personal data is used as a Redis key. */

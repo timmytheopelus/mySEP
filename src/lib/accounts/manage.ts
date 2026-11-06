@@ -3,7 +3,10 @@ import { F, T, pickAllowedForRole } from "@/lib/airtable/schema";
 import { getRecord } from "@/lib/airtable/client";
 import {
   ROLE_LABEL,
-  emailExists,
+  emailCount,
+  getAccountById as getActiveAccountById,
+  hasUsablePassword,
+  newUnsetMarker,
   getAccountAnyStatus,
   getAccountByEmail,
   getAccountById,
@@ -19,6 +22,7 @@ import {
 } from "@/lib/accounts/repo";
 import { LINK_TTL_S, linkUrl, signLinkToken, verifyLinkToken } from "@/lib/accounts/links";
 import { BreachCheckUnavailableError, hashPassword, isBreachedPassword, validatePasswordPolicy } from "@/lib/auth/password";
+import { reauthenticate } from "@/lib/auth/reauth";
 import { credentialFingerprint, invalidateAccount, type Session } from "@/lib/auth/session";
 import { runInBackground } from "@/lib/background";
 import { appBaseUrl, sendMail } from "@/lib/email";
@@ -52,16 +56,27 @@ async function validateRoleAndParoki(role: unknown, parokiId: unknown): Promise<
   if (typeof parokiId !== "string" || !REC_ID.test(parokiId)) throw new HttpError(422, "Paroki wajib diisi untuk PIC dan Admin");
   try {
     await getRecord(T.paroki, parokiId);
-  } catch {
-    throw new HttpError(422, "Paroki tidak ditemukan");
+  } catch (e) {
+    // Only "not found" is the caller's mistake; an outage must not look like bad input.
+    if (e instanceof Error && /HTTP (404|422)\b/.test(e.message)) throw new HttpError(422, "Paroki tidak ditemukan");
+    throw new HttpError(503);
   }
   return { role: role as Role, parokiId };
+}
+
+export type StepUp = { code?: unknown };
+
+/** Fresh TOTP from the ACTING SEP for actions that can mint or unlock privileged access. */
+async function requireStepUp(actor: Session, stepUp: StepUp | undefined): Promise<void> {
+  const me = await getActiveAccountById(actor.accountId);
+  if (!me || !(await reauthenticate(me, { code: stepUp?.code }))) throw new HttpError(403, "Verifikasi ulang gagal");
 }
 
 /** Never leave the system without an active SEP (lockout of everyone). Not atomic across parallel calls. */
 async function assertNotLastSep(target: AccountRow): Promise<void> {
   if (target.role !== "SEP" || !target.active) return;
-  const others = (await listAllAccounts()).filter((a) => a.id !== target.id && a.role === "SEP" && a.active);
+  // Only SEPs that can actually sign in count (a password must be set).
+  const others = (await listAllAccounts()).filter((a) => a.id !== target.id && a.role === "SEP" && a.active && hasUsablePassword(a));
   if (others.length === 0) throw new HttpError(409, "Tidak dapat menonaktifkan atau menurunkan SEP aktif terakhir");
 }
 
@@ -81,14 +96,16 @@ async function sendLink(kind: "invite" | "reset", acc: { id: string; email: stri
 
 export type CreateInput = { email: string; nama: string; role: Role; parokiId: string | null };
 
-export async function createAccount(actor: Session, input: CreateInput): Promise<Account & { inviteSent: boolean }> {
+export async function createAccount(actor: Session, input: CreateInput, stepUp?: StepUp): Promise<Account & { inviteSent: boolean }> {
   assertSep(actor);
   const email = normalizeEmail(String(input?.email ?? ""));
   if (!EMAIL_RE.test(email) || email.length > 254) throw new HttpError(422, "Email tidak valid");
   const nama = String(input?.nama ?? "").trim();
   if (!nama || nama.length > 120) throw new HttpError(422, "Nama wajib diisi");
   const { role, parokiId } = await validateRoleAndParoki(input?.role, input?.parokiId);
-  if (await emailExists(email)) throw new HttpError(409, "Email sudah terdaftar");
+  if (role === "SEP") await requireStepUp(actor, stepUp);
+  if ((await emailCount(email)) > 0) throw new HttpError(409, "Email sudah terdaftar");
+  const unset = newUnsetMarker();
 
   // Request-derived fields go through the role allowlist; the password hash is never part of this write.
   const fields = pickAllowedForRole(T.akunKep, actor.role, {
@@ -97,11 +114,17 @@ export async function createAccount(actor: Session, input: CreateInput): Promise
     [A.peran]: ROLE_LABEL[role],
     [A.paroki]: parokiId ? [parokiId] : [],
     [A.statusAktif]: true,
+    [A.hashPassword]: unset, // unusable placeholder: gives this no-password period its own link fingerprint
   });
   const id = await insertAccount(fields);
+  if ((await emailCount(email)) > 1) {
+    // A concurrent create won the race. Never delete rows: switch ours off and report the conflict.
+    await patchAccount(id, { [A.statusAktif]: false });
+    throw new HttpError(409, "Email sudah terdaftar");
+  }
   await writeAudit({ aksi: "akun_buat", pelaku: actor.email, targetId: id, sesudah: `${email} ${describe({ role, parokiId })}` });
   const acc: Account = {
-    id, email, nama, role, parokiId, passwordHash: null, googleSub: null, mfaSecretEnc: null, failed: 0, lockedUntil: null, lastTotpStep: null,
+    id, email, nama, role, parokiId, passwordHash: unset, googleSub: null, mfaSecretEnc: null, failed: 0, lockedUntil: null, lastTotpStep: null,
   };
   return { ...acc, inviteSent: await sendLink("invite", acc) };
 }
@@ -122,20 +145,23 @@ export async function reactivateAccount(actor: Session, accountId: string): Prom
   const t = await loadTarget(accountId);
   if (t.active) throw new HttpError(409, "Akun sudah aktif");
   await writeAudit({ aksi: "akun_aktif", pelaku: actor.email, targetId: t.id, sebelum: "nonaktif", sesudah: "aktif" });
+  const unset = newUnsetMarker();
   await patchAccount(t.id, pickAllowedForRole(T.akunKep, actor.role, {
     [A.statusAktif]: true,
-    [A.hashPassword]: null,
+    [A.hashPassword]: unset, // fresh fingerprint: invites/resets from any earlier period are dead
+    [A.idGoogle]: null, // the invite must be used first; Google is re-linked afterwards
     [A.gagalLogin]: 0,
     [A.waktuKunci]: null,
   }));
   invalidateAccount(t.id);
-  await sendLink("invite", { id: t.id, email: t.email, nama: t.nama, passwordHash: null });
+  await sendLink("invite", { id: t.id, email: t.email, nama: t.nama, passwordHash: unset });
 }
 
-export async function changeAccount(actor: Session, accountId: string, input: { role: Role; parokiId: string | null }): Promise<void> {
+export async function changeAccount(actor: Session, accountId: string, input: { role: Role; parokiId: string | null }, stepUp?: StepUp): Promise<void> {
   assertSep(actor);
   const t = await loadTarget(accountId);
   const next = await validateRoleAndParoki(input?.role, input?.parokiId);
+  if (next.role === "SEP" && t.role !== "SEP") await requireStepUp(actor, stepUp);
   if (t.role === "SEP" && next.role !== "SEP") await assertNotLastSep(t);
   await writeAudit({ aksi: "akun_ubah", pelaku: actor.email, targetId: t.id, sebelum: describe(t), sesudah: describe(next) });
   await patchAccount(t.id, pickAllowedForRole(T.akunKep, actor.role, {
@@ -145,20 +171,22 @@ export async function changeAccount(actor: Session, accountId: string, input: { 
   invalidateAccount(t.id);
 }
 
-export async function clearGoogleBinding(actor: Session, accountId: string): Promise<void> {
+export async function clearGoogleBinding(actor: Session, accountId: string, stepUp?: StepUp): Promise<void> {
   assertSep(actor);
   const t = await loadTarget(accountId);
   if (!t.googleSub) throw new HttpError(409, "Tidak ada akun Google yang terhubung");
+  await requireStepUp(actor, stepUp);
   await writeAudit({ aksi: "google_unbind", pelaku: actor.email, targetId: t.id, sebelum: last4(t.googleSub), sesudah: "-" });
   await patchAccount(t.id, { [A.idGoogle]: null });
   invalidateAccount(t.id);
 }
 
 /** Lost authenticator: SEP clears the TOTP secret; the user enrolls again at next login. */
-export async function resetMfa(actor: Session, accountId: string): Promise<void> {
+export async function resetMfa(actor: Session, accountId: string, stepUp?: StepUp): Promise<void> {
   assertSep(actor);
   const t = await loadTarget(accountId);
   if (!t.mfaSecretEnc) throw new HttpError(409, "MFA belum terdaftar");
+  await requireStepUp(actor, stepUp);
   await writeAudit({ aksi: "mfa_reset", pelaku: actor.email, targetId: t.id, sebelum: "terdaftar", sesudah: "-" });
   await patchAccount(t.id, { [A.rahasiaMfa]: null, [A.langkahTotpTerakhir]: null });
   invalidateAccount(t.id);

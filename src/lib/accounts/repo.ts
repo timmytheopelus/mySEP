@@ -1,5 +1,5 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createRecords, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
 
@@ -32,6 +32,12 @@ const ROLE_BY_LABEL: Record<string, Role> = {
   admin: "ADMIN",
   "admin paroki": "ADMIN",
 };
+
+/** Random unusable placeholder stored while an account has no password: each no-password period gets its own
+ * hash fingerprint, so one-time links from an earlier period can never be valid again. Never verifies. */
+export const UNSET_PREFIX = "unset:";
+export const newUnsetMarker = () => UNSET_PREFIX + randomBytes(32).toString("base64url");
+export const hasUsablePassword = (a: { passwordHash: string | null }) => !!a.passwordHash && !a.passwordHash.startsWith(UNSET_PREFIX);
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
@@ -85,7 +91,7 @@ export async function getAccountByEmail(email: string): Promise<Account | null> 
   if (!e || e.length > 254) return null;
   const recs = await listRecords(T.akunKep, {
     fields: FIELDS,
-    filterByFormula: `LOWER({${A.email}}) = ${q(e)}`,
+    filterByFormula: `LOWER(TRIM({${A.email}})) = ${q(e)}`,
     maxRecords: 2,
   });
   // Defence in depth: never trust the formula alone.
@@ -165,11 +171,11 @@ export async function getAccountAnyStatus(id: string): Promise<AccountRow | null
   return r ? parseAccount(r) : null;
 }
 
-/** True when ANY account (active or not) already uses this email. */
-export async function emailExists(email: string): Promise<boolean> {
+/** Number of accounts (active or not) using this email. */
+export async function emailCount(email: string): Promise<number> {
   const e = normalizeEmail(email);
-  const recs = await listRecords(T.akunKep, { fields: [A.email], filterByFormula: `LOWER({${A.email}}) = ${q(e)}`, maxRecords: 2 });
-  return recs.some((r) => typeof r.fields[A.email] === "string" && normalizeEmail(r.fields[A.email] as string) === e);
+  const recs = await listRecords(T.akunKep, { fields: [A.email], filterByFormula: `LOWER(TRIM({${A.email}})) = ${q(e)}`, maxRecords: 5 });
+  return recs.filter((r) => typeof r.fields[A.email] === "string" && normalizeEmail(r.fields[A.email] as string) === e).length;
 }
 
 export async function insertAccount(fields: Record<string, unknown>): Promise<string> {

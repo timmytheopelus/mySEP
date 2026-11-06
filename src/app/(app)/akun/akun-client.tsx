@@ -15,7 +15,7 @@ export default function AkunClient() {
   const [akun, setAkun] = useState<Akun[]>([]);
   const [paroki, setParoki] = useState<Paroki[]>([]);
   const [msg, setMsg] = useState("");
-  const [form, setForm] = useState({ email: "", nama: "", role: "PIC", parokiId: "" });
+  const [form, setForm] = useState({ email: "", nama: "", role: "PIC", parokiId: "", code: "" });
 
   const load = useCallback(async () => {
     const r = await call("/api/akun", "GET");
@@ -44,12 +44,17 @@ export default function AkunClient() {
     e.preventDefault();
     const r = await call("/api/akun", "POST", { ...form, parokiId: form.role === "SEP" ? null : form.parokiId });
     setMsg(r.ok ? (r.data.undanganTerkirim ? "Akun dibuat, undangan dikirim." : "Akun dibuat, tetapi email undangan gagal dikirim.") : String(r.data.error ?? "Gagal"));
-    if (r.ok) setForm({ email: "", nama: "", role: "PIC", parokiId: "" });
+    if (r.ok) setForm({ email: "", nama: "", role: "PIC", parokiId: "", code: "" });
     await load();
   }
 
-  async function act(a: Akun, body: Record<string, unknown>, confirmText?: string) {
+  async function act(a: Akun, body: Record<string, unknown>, confirmText?: string, stepUp = false) {
     if (confirmText && !window.confirm(confirmText)) return;
+    if (stepUp) {
+      const code = window.prompt("Kode autentikator Anda (6 digit)");
+      if (!code) return;
+      body = { ...body, code };
+    }
     const r = await call(`/api/akun/${encodeURIComponent(a.id)}`, "PATCH", body);
     setMsg(r.ok ? "Tersimpan." : String(r.data.error ?? "Gagal"));
     await load();
@@ -71,6 +76,9 @@ export default function AkunClient() {
             {paroki.map((p) => <option key={p.id} value={p.id}>{p.nama}</option>)}
           </select>
         )}
+        {form.role === "SEP" && (
+          <input className={styles.input} inputMode="numeric" maxLength={6} placeholder="Kode autentikator Anda (wajib untuk SEP)" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
+        )}
         <button className={styles.button} type="submit">Buat akun dan kirim undangan</button>
       </form>
       {msg && <p role="status">{msg}</p>}
@@ -89,8 +97,8 @@ export default function AkunClient() {
                 ) : (
                   <button className={styles.small} onClick={() => act(a, { action: "reactivate" }, `Aktifkan ${a.email}? Password diatur ulang lewat undangan baru.`)}>Aktifkan</button>
                 )}
-                {a.googleTerhubung && <button className={styles.small} onClick={() => act(a, { action: "clear_google" }, `Lepas akun Google ${a.email}?`)}>Lepas Google</button>}
-                {a.mfa && <button className={styles.small} onClick={() => act(a, { action: "reset_mfa" }, `Reset MFA ${a.email}?`)}>Reset MFA</button>}
+                {a.googleTerhubung && <button className={styles.small} onClick={() => act(a, { action: "clear_google" }, `Lepas akun Google ${a.email}?`, true)}>Lepas Google</button>}
+                {a.mfa && <button className={styles.small} onClick={() => act(a, { action: "reset_mfa" }, `Reset MFA ${a.email}?`, true)}>Reset MFA</button>}
                 <select className={styles.select} aria-label={`Ubah peran ${a.email}`} value="" onChange={(e) => {
                   const role = e.target.value;
                   if (!role) return;
@@ -100,7 +108,7 @@ export default function AkunClient() {
                     parokiId = a.parokiId ?? paroki.find((p) => p.nama.toLowerCase() === (nama ?? "").trim().toLowerCase())?.id ?? null;
                     if (!parokiId) return void setMsg("Paroki tidak ditemukan.");
                   }
-                  void act(a, { action: "set_role", role, parokiId }, `Ubah peran ${a.email} menjadi ${role}?`);
+                  void act(a, { action: "set_role", role, parokiId }, `Ubah peran ${a.email} menjadi ${role}?`, role === "SEP");
                 }}>
                   <option value="">Ubah peran...</option>
                   <option value="SEP">SEP</option>

@@ -18,13 +18,13 @@ export const PATCH = withAuth<{ id: string }>(
         await reactivateAccount(session, id);
         break;
       case "set_role":
-        await changeAccount(session, id, { role: b.role as "SEP", parokiId: (b.parokiId ?? null) as string | null });
+        await changeAccount(session, id, { role: b.role as "SEP", parokiId: (b.parokiId ?? null) as string | null }, { code: b.code });
         break;
       case "clear_google":
-        await clearGoogleBinding(session, id);
+        await clearGoogleBinding(session, id, { code: b.code });
         break;
       case "reset_mfa":
-        await resetMfa(session, id);
+        await resetMfa(session, id, { code: b.code });
         break;
       default:
         throw new HttpError(400);
