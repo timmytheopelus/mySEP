@@ -1,0 +1,6 @@
+.main { max-width: 24rem; margin: 3rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; }
+.form { display: flex; flex-direction: column; gap: 0.75rem; }
+.input { min-height: 2.75rem; padding: 0 0.75rem; font-size: 1rem; }
+.button { min-height: 2.75rem; font-size: 1rem; cursor: pointer; }
+.error { color: #b00020; }
+.secret { word-break: break-all; font-family: monospace; }
