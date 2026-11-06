@@ -38,16 +38,20 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         ← Kembali ke KEP
       </Link>
       <h1>Jadwal dan pewarta</h1>
-      {jadwal.terkunci ? (
+      {jadwal.waktuTerkunci ? (
         <p className={styles.lock} data-testid="jadwal-terkunci">
-          {session.role === "SEP" ? "KEP ini ditolak, sehingga penugasan pewarta tidak dapat diubah." : "Penugasan pewarta terkunci setelah KEP disetujui SEP; halaman ini hanya-baca. Hubungi SEP jika perlu perubahan."}
+          KEP ini ditolak, sehingga jadwal dan penugasan pewarta tidak dapat diubah.
+        </p>
+      ) : jadwal.terkunci ? (
+        <p className={styles.lock} data-testid="jadwal-terkunci">
+          Penugasan pewarta terkunci setelah KEP disetujui SEP; hubungi SEP jika perlu perubahan. Tanggal dan jam pertemuan masih dapat disesuaikan.
         </p>
       ) : (
         <p className={styles.hint}>
-          Usulkan pewarta untuk tiap pertemuan, lalu simpan per pertemuan. Setelah KEP disetujui SEP, penugasan terkunci. Hanya pewarta yang aktif ditawarkan.
+          Usulkan pewarta untuk tiap pertemuan dan sesuaikan tanggal atau jam bila perlu, lalu simpan per pertemuan. Setelah KEP disetujui SEP, penugasan pewarta terkunci (tanggal dan jam tetap dapat disesuaikan). Hanya pewarta yang aktif ditawarkan.
         </p>
       )}
-      <JadwalClient kepId={id} pertemuan={jadwal.pertemuan} opsi={jadwal.opsi} terkunci={jadwal.terkunci} />
+      <JadwalClient kepId={id} pertemuan={jadwal.pertemuan} opsi={jadwal.opsi} terkunci={jadwal.terkunci} waktuTerkunci={jadwal.waktuTerkunci} mulai={jadwal.mulai} />
     </main>
   );
 }

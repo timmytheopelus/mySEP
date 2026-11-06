@@ -6,6 +6,7 @@ import type { Session } from "@/lib/auth/session";
 import { logAudit } from "@/lib/audit/log";
 import { HttpError } from "@/lib/http/errors";
 import { invalidateKepCache } from "@/lib/kep/readModel";
+import { invalidateTable } from "@/lib/airtable/cache";
 import { listPewarta } from "@/lib/pewarta/profile";
 
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
@@ -26,17 +27,24 @@ async function scope(actor: Session, eventKepId: string, fresh = false) {
   requireRole(actor, ["PIC", "SEP"]);
   const { eventKep } = await assertKepInScope(actor, eventKepId, { fresh });
   const status = str(eventKep.fields[F.eventKep.statusPersetujuan]);
-  return { eventIds: ids(eventKep.fields[F.eventKep.events]), terkunci: actor.role === "SEP" ? status === "Ditolak" : status !== "Diajukan" };
+  return {
+    eventIds: ids(eventKep.fields[F.eventKep.events]),
+    mulai: day(eventKep.fields[F.eventKep.tanggalMulai]),
+    terkunci: actor.role === "SEP" ? status === "Ditolak" : status !== "Diajukan",
+    // Dates and times: PIC while Diajukan or Disetujui (the pewarta stay locked after approval), SEP on anything not rejected.
+    waktuTerkunci: actor.role === "SEP" ? status === "Ditolak" : status !== "Diajukan" && status !== "Disetujui",
+  };
 }
 
-export type JadwalItem = { id: string; urutan: number; agenda: string; tanggal: string; pengajarIds: string[] };
-export type Jadwal = { pertemuan: JadwalItem[]; opsi: { id: string; nama: string }[]; terkunci: boolean };
+export type JadwalItem = { id: string; urutan: number; agenda: string; tanggal: string; jamMulai: string; jamSelesai: string; pengajarIds: string[] };
+/** `terkunci`: pewarta assignment locked. `waktuTerkunci`: tanggal / jam locked (a separate, looser rule). `mulai`: KEP start date (lower bound for dates). */
+export type Jadwal = { pertemuan: JadwalItem[]; opsi: { id: string; nama: string }[]; terkunci: boolean; waktuTerkunci: boolean; mulai: string };
 
 /** Pertemuan of the KEP with their current pewarta, plus the active pewarta that can be assigned (names only). */
 export async function getJadwal(actor: Session, eventKepId: string): Promise<Jadwal> {
-  const { eventIds, terkunci } = await scope(actor, eventKepId);
+  const { eventIds, terkunci, waktuTerkunci, mulai } = await scope(actor, eventKepId);
   const [subs, pewarta] = await Promise.all([
-    listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan, F.subEvent.pengajar] }),
+    listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.jamMulai, F.subEvent.jamSelesai, F.subEvent.urutan, F.subEvent.pengajar] }),
     listPewarta(actor),
   ]);
   const pertemuan = subs
@@ -46,10 +54,12 @@ export async function getJadwal(actor: Session, eventKepId: string): Promise<Jad
       urutan: Number(s.fields[F.subEvent.urutan]) || 0,
       agenda: str(s.fields[F.subEvent.agenda]),
       tanggal: day(s.fields[F.subEvent.tanggal]),
+      jamMulai: str(s.fields[F.subEvent.jamMulai]),
+      jamSelesai: str(s.fields[F.subEvent.jamSelesai]),
       pengajarIds: ids(s.fields[F.subEvent.pengajar]),
     }))
     .sort((a, b) => a.tanggal.localeCompare(b.tanggal) || a.urutan - b.urutan || a.id.localeCompare(b.id));
-  return { pertemuan, opsi: pewarta.map((p) => ({ id: p.id, nama: p.nama })), terkunci };
+  return { pertemuan, opsi: pewarta.map((p) => ({ id: p.id, nama: p.nama })), terkunci, waktuTerkunci, mulai };
 }
 
 type Marker = { opId?: unknown; t?: unknown; kepId?: unknown; ids?: unknown };
@@ -127,4 +137,134 @@ export async function assignPengajar(actor: Session, eventKepId: string, subEven
   }
   invalidateKepCache();
   return { pengajarIds: want };
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Tanggal / jam of one pertemuan (spec §5: "PIC hanya menyesuaikan tanggal bila perlu")
+// ---------------------------------------------------------------------------------------------
+export const WAKTU_TERKUNCI = "Jadwal tidak dapat diubah karena KEP ini ditolak";
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+export type Waktu = { tanggal: string; jamMulai: string; jamSelesai: string };
+
+/** A real calendar date (YYYY-MM-DD) as UTC milliseconds, or null. */
+function dateMs(v: string): number | null {
+  const m = ISO_DATE.exec(v);
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return new Date(ms).toISOString().slice(0, 10) === v ? ms : null;
+}
+const plusOneYear = (v: string): string => {
+  const ms = dateMs(v);
+  if (ms === null) return "";
+  const d = new Date(ms);
+  d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d.toISOString().slice(0, 10);
+};
+
+/** Pure validation: ISO date inside [KEP start, KEP start + 1 year] (no bound when the KEP has no start), HH:MM times (both or none), end after start. */
+export function validateWaktu(w: Waktu, kepMulai: string): string | null {
+  if (typeof w.tanggal !== "string" || dateMs(w.tanggal) === null) return "Tanggal tidak valid";
+  if (kepMulai && dateMs(kepMulai) !== null) {
+    if (w.tanggal < kepMulai) return "Tanggal tidak boleh sebelum tanggal mulai KEP";
+    if (w.tanggal > plusOneYear(kepMulai)) return "Tanggal terlalu jauh dari tanggal mulai KEP (maksimal satu tahun)";
+  }
+  const a = w.jamMulai, b = w.jamSelesai;
+  if (typeof a !== "string" || typeof b !== "string") return "Jam tidak valid";
+  if (a === "" && b === "") return null;
+  if (a === "" || b === "") return "Isi jam mulai dan jam selesai, atau kosongkan keduanya";
+  if (!HHMM.test(a) || !HHMM.test(b)) return "Jam harus berformat JJ:MM (24 jam)";
+  if (b <= a) return "Jam selesai harus setelah jam mulai";
+  return null;
+}
+
+const sameWaktu = (a: Waktu, b: Waktu) => a.tanggal === b.tanggal && a.jamMulai === b.jamMulai && a.jamSelesai === b.jamSelesai;
+const waktuOf = (f: Record<string, unknown>): Waktu => ({ tanggal: day(f[F.subEvent.tanggal]), jamMulai: str(f[F.subEvent.jamMulai]), jamSelesai: str(f[F.subEvent.jamSelesai]) });
+type WMarker = Marker & Partial<Waktu>;
+
+async function waktuMarkers(subEventId: string): Promise<WMarker[]> {
+  const AU = F.auditKep;
+  const rows = await listRecords(T.auditKep, {
+    fields: [AU.aksi, AU.targetId, AU.sesudah],
+    filterByFormula: `AND(OR({${AU.aksi}}="jadwal_set",{${AU.aksi}}="jadwal_set_ulang"),{${AU.targetId}}="${subEventId}")`,
+  });
+  const out: WMarker[] = [];
+  for (const r of rows) {
+    if ((r.fields[AU.aksi] !== "jadwal_set" && r.fields[AU.aksi] !== "jadwal_set_ulang") || r.fields[AU.targetId] !== subEventId) continue;
+    try {
+      out.push(JSON.parse(str(r.fields[AU.sesudah])) as WMarker);
+    } catch {
+      /* not one of ours */
+    }
+  }
+  return out;
+}
+
+/**
+ * Sets Tanggal, Jam Mulai and Jam Selesai of ONE pertemuan of this KEP (never creates, deletes or reorders pertemuan).
+ * PIC of the owning paroki while the KEP is Diajukan or Disetujui, SEP unless it is Ditolak, Admin Paroki 403. Audit first
+ * (abort when it fails), idempotent per opId bound to the payload. The PATCH response is the verification (no extra read).
+ * Warm cache: scope refresh (1) + pertemuan (1) + marker lookup (1) + audit (1) + PATCH (1).
+ */
+export async function updateWaktu(actor: Session, eventKepId: string, subEventId: string, input: Waktu, opId: string): Promise<Waktu> {
+  const { eventIds, waktuTerkunci, mulai } = await scope(actor, eventKepId, true); // the lock depends on the status: fresh read
+  if (waktuTerkunci) throw new HttpError(409, WAKTU_TERKUNCI);
+  if (typeof opId !== "string" || !OP_ID.test(opId)) throw new HttpError(422, "opId tidak valid");
+  const want: Waktu = { tanggal: str(input?.tanggal), jamMulai: str(input?.jamMulai), jamSelesai: str(input?.jamSelesai) };
+  const bad = validateWaktu(want, mulai);
+  if (bad) throw new HttpError(422, bad);
+  const { subEvent: sub } = await assertSubEventInScope(actor, subEventId);
+  if (!ids(sub.fields[F.subEvent.acara]).some((e) => eventIds.includes(e))) throw new HttpError(404);
+
+  const cur = waktuOf(sub.fields);
+  const mine = (await waktuMarkers(subEventId)).filter((m) => m.opId === opId);
+  const prev = [...mine].sort((a, b) => Number(a.t ?? 0) - Number(b.t ?? 0)).at(-1);
+  let aksi = "jadwal_set";
+  if (prev) {
+    if (prev.kepId !== eventKepId || !sameWaktu({ tanggal: str(prev.tanggal), jamMulai: str(prev.jamMulai), jamSelesai: str(prev.jamSelesai) }, want))
+      throw new HttpError(409, "opId sudah dipakai untuk permintaan lain");
+    if (sameWaktu(cur, want)) return cur;
+    const t = Number(prev.t ?? 0);
+    const newer = (await waktuMarkers(subEventId)).some((m) => m.opId !== opId && Number(m.t ?? 0) >= t);
+    if (newer) return cur; // a later save replaced this one: do not resurrect it
+    aksi = "jadwal_set_ulang";
+  }
+  await logAudit({
+    actorEmail: actor.email,
+    action: aksi,
+    targetId: subEventId,
+    before: cur,
+    after: { opId, t: Date.now(), kepId: eventKepId, ...want, role: actor.role },
+    opId,
+  });
+  const fail = async (e: unknown): Promise<never> => {
+    try {
+      await logAudit({ actorEmail: actor.email, action: "jadwal_set_gagal", targetId: subEventId, after: { opId, t: Date.now() }, opId });
+    } catch {
+      console.error("audit of failed jadwal write also failed");
+    }
+    throw e;
+  };
+  try {
+    const res = await updateRecords(T.subEvent, [
+      {
+        id: subEventId,
+        fields: pickAllowedForRole(T.subEvent, actor.role, {
+          [F.subEvent.tanggal]: want.tanggal,
+          [F.subEvent.jamMulai]: want.jamMulai || null,
+          [F.subEvent.jamSelesai]: want.jamSelesai || null,
+        }),
+      },
+    ]);
+    const back = res.find((r) => r.id === subEventId);
+    if (!back || !sameWaktu(waktuOf(back.fields), want)) return await fail(new HttpError(503, "Jadwal belum tersimpan. Coba lagi.", 5));
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    return fail(e);
+  } finally {
+    invalidateTable(T.subEvent); // absen sheet, hub, penetapan unlock (last meeting date) and reports see it at once
+  }
+  invalidateKepCache(T.subEvent);
+  return want;
 }

@@ -82,6 +82,7 @@ export const MATRIX: Entry[] = [
   { route: "kep/[id]/link-daftar", method: "GET", kind: "auth", roles: ["PIC"], kepScoped: true, params: KEP, rule: "§6 PIC: kelola peserta (link); ruling Task 16b: PIC only" },
   { route: "kep/[id]/link-daftar/rotate", method: "POST", kind: "auth", roles: ["PIC"], kepScoped: true, params: KEP, body: { opId: OP }, rule: "§6 PIC: kelola peserta (link); ruling Task 16b" },
   { route: "kep/[id]/subevent/[sid]/pengajar", method: "POST", kind: "auth", roles: ["PIC", "SEP"], kepScoped: true, params: { ...KEP, sid: KEP_SUB.subEventId }, body: { pengajarIds: ["recSECPEWARTA0001"], opId: OP }, rule: "§6 PIC: ajukan pewarta; SEP: post-approval edit (Task 17); Admin: tidak" },
+  { route: "kep/[id]/subevent/[sid]/jadwal", method: "POST", kind: "auth", roles: ["PIC", "SEP"], kepScoped: true, params: { ...KEP, sid: KEP_SUB.subEventId }, body: { tanggal: "2026-11-12", jamMulai: "19:00", jamSelesai: "21:00", opId: OP }, rule: "§5 PIC: menyesuaikan tanggal (Diajukan dan Disetujui); SEP: kapan saja kecuali Ditolak; Admin: tidak (Final fix B, I7)" },
 
   // ---- PIC + Admin (absensi, mundur, lulus, manual peserta) ----------------------------------
   { route: "kep/[id]/peserta", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP, rule: "§6 PIC: kelola peserta (manual); ADMIN allowed by ruling (OWNER CONFIRMATION pending)" },
