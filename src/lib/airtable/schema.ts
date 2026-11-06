@@ -22,6 +22,10 @@ export const T = {
 // it never enters the write allowlist.
 export const EVENT_ID_FIELD = "fldhpu7dbyYUETwuY";
 
+// Value of Data Pengajar KEP "Status" (fldi7BZu04g8hHksR) that means an active pewarta. UNVERIFIED: the plan
+// names the choice "Aktif" but the exact option text/field type has not been read from the live base.
+export const PENGAJAR_STATUS_AKTIF = "Aktif";
+
 export const SEL = {
   kelompokAcaraKep: "sel89ZKeY5BWQgaTL",
 } as const;

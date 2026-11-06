@@ -86,7 +86,7 @@ describe("createKep happy path", () => {
   it("sets restricted fields only through the trusted extra set, never from input", async () => {
     await createKep(picA, { ...input, penyelenggara: ["recEVIL0000000001"], statusPersetujuan: "Disetujui" } as never, { now: NOW });
     const kepCall = vi.mocked(client.createRecords).mock.calls.find((c) => c[0] === T.eventKep)!;
-    expect(kepCall[2]).toEqual(RESTRICTED[T.eventKep]);
+    expect(kepCall[2]).toEqual(new Set([F.eventKep.statusPersetujuan, F.eventKep.penyelenggara]));
     expect(kepCall[1][0][F.eventKep.statusPersetujuan]).toBe("Diajukan");
     expect(rows(T.eventKep)[0].fields[F.eventKep.penyelenggara]).not.toContain("recEVIL0000000001");
     const orgCall = vi.mocked(client.createRecords).mock.calls.find((c) => c[0] === T.penyelenggaraKep)!;
