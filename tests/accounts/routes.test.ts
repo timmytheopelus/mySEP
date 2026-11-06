@@ -5,6 +5,10 @@ import { F, T } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
 
 vi.mock("@/lib/airtable/client", () => fakeClientModule());
+vi.mock("@/lib/auth/reauth", async (orig) => {
+  const m = await orig<typeof import("@/lib/auth/reauth")>();
+  return { reauthenticate: vi.fn(m.reauthenticate) };
+});
 
 import { GET as listAkun, POST as createAkun } from "@/app/api/akun/route";
 import { PATCH as patchAkun } from "@/app/api/akun/[id]/route";
@@ -158,11 +162,19 @@ describe("/api/akun", () => {
     const body = await res.json();
     expect(JSON.stringify(body)).not.toMatch(/evil|hash/i);
     const created = store[T.akunKep].find((r) => r.fields[A.email] === "baru@x.id")!;
-    expect(created.fields[A.hashPassword]).toBeUndefined();
+    expect(String(created.fields[A.hashPassword])).toMatch(/^unset:/);
     expect(created.fields[A.rahasiaMfa]).toBeUndefined();
     expect(created.fields[A.statusAktif]).toBe(true);
     expect((await call(createAkun, { email: "baru@x.id", nama: "Baru", role: "PIC", parokiId: PA }, { as: sep })).status).toBe(409);
     expect((await call(createAkun, { email: "x@x.id", nama: "X", role: "PIC" }, { as: sep })).status).toBe(422);
+  });
+
+  it("reset_mfa and clear_google through the route need the acting SEP's code", async () => {
+    row(pic.accountId).fields[A.idGoogle] = "g-sub-1";
+    const params = { id: pic.accountId };
+    const r = await call(patchAkun, { action: "clear_google" }, { method: "PATCH", as: sep, params });
+    expect(r.status).toBe(403); // sep has no authenticator / no code
+    expect(row(pic.accountId).fields[A.idGoogle]).toBe("g-sub-1");
   });
 
   it("PATCH actions work for SEP only and map errors", async () => {
@@ -192,7 +204,12 @@ describe("/api/auth/mfa/manage (logged in)", () => {
     const bad = await call(mfaManage, { pending: b.pending, code: "000000" }, { as: adm });
     expect(bad.status).toBe(400);
     expect(row(adm.accountId).fields[A.rahasiaMfa]).toBeUndefined();
-    const done = await call(mfaManage, { pending: b.pending, code: code(b.secret) }, { as: adm });
+    // a stolen session alone cannot bind an authenticator: the account password is required
+    const noPw = await call(mfaManage, { pending: b.pending, code: code(b.secret) }, { as: adm });
+    expect(noPw.status).toBe(403);
+    expect((await call(mfaManage, { pending: b.pending, code: code(b.secret), password: "wrong wrong wrong" }, { as: adm })).status).toBe(403);
+    expect(row(adm.accountId).fields[A.rahasiaMfa]).toBeUndefined();
+    const done = await call(mfaManage, { pending: b.pending, code: code(b.secret), password: "correct horse battery staple" }, { as: adm });
     expect(done.status).toBe(200);
     expect(decryptSecret(String(row(adm.accountId).fields[A.rahasiaMfa]))).toBe(b.secret);
     // the response carries a fresh session so the user is not logged out by their own change
@@ -223,6 +240,7 @@ describe("/api/auth/mfa/manage (logged in)", () => {
     const done = await call(mfaManage, { pending: b.pending, code: code(b.secret), currentCode: code(old) }, { as: me });
     expect(done.status).toBe(200);
     expect(decryptSecret(String(row("recADM2000000001").fields[A.rahasiaMfa]))).toBe(b.secret);
+    expect(typeof row("recADM2000000001").fields[A.langkahTotpTerakhir]).toBe("number");
     const set = done.headers.getSetCookie().find((c) => c.startsWith(SESSION_COOKIE + "="))!;
     expect(await readSession(set.split(";")[0])).not.toBeNull();
     expect((store[T.auditKep] ?? []).some((a) => a.fields[F.auditKep.aksi] === "mfa_ganti")).toBe(true);
