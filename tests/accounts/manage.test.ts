@@ -183,6 +183,14 @@ describe("confirmPasswordReset", () => {
     expect(await verifyPassword(String(row(sepA.accountId).fields[A.hashPassword]), strong)).toBe(true);
   });
 
+  it("bootstrap (runbook): a first SEP row typed into Airtable without a password can set one via 'Lupa password'", async () => {
+    store[T.akunKep].push({ id: "recSEPBOOT0000001", fields: { [A.email]: "pertama@bpk.id", [A.nama]: "SEP Pertama", [A.peran]: "SEP", [A.statusAktif]: true } });
+    const tok = await link("pertama@bpk.id");
+    await confirmPasswordReset(tok, strong);
+    expect(await verifyPassword(String(row("recSEPBOOT0000001").fields[A.hashPassword]), strong)).toBe(true);
+    await expect(confirmPasswordReset(tok, strong + "2")).rejects.toBeInstanceOf(LinkError);
+  });
+
   it("rejects a token at 31 minutes but accepts one at 29", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const t1 = await link();

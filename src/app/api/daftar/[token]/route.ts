@@ -7,6 +7,8 @@ import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const dynamic = "force-dynamic";
+// The response is held to REG_MIN_RESPONSE_MS (default 6 s) plus ~12 Airtable calls: needs well over 7 s.
+export const maxDuration = 30;
 
 const IP_LIMIT = 10; // registrations per hour per IP
 const EMAIL_LIMIT = 3; // per hour per email address (stops mail bombing a victim)
