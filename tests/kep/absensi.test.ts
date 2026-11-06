@@ -346,7 +346,7 @@ describe("round 1 fixes", () => {
   it("I-4: the end-of-run re-list re-applies a link that was lost", async () => {
     const orig = vi.mocked(client.updateRecords).getMockImplementation()!;
     let n = 0;
-    vi.mocked(client.updateRecords).mockImplementation(async (t: string, rows: never[], e?: Set<string>) => {
+    vi.mocked(client.updateRecords).mockImplementation(async (t: string, rows: { id: string; fields: Record<string, unknown> }[], e?: Set<string>) => {
       if (t === T.pendaftaranEvents && ++n === 2) return []; // second peserta write silently lost
       return orig(t, rows, e);
     });
