@@ -18,8 +18,17 @@ describe("visibleTestimonials", () => {
     expect(visibleTestimonials(base)[0]).toEqual({ quote: "Hidup saya berubah.", name: "Maria", photo: "/maria.jpg" });
     expect(visibleTestimonials(base)[2]).toEqual({ quote: "Tanpa foto.", name: "Agnes" });
   });
-  it("shipped testimonials all default to no consent", async () => {
+  it("fixture mixing consent true and false: only consenting items expose name/photo", () => {
+    const out = visibleTestimonials(base);
+    expect(out.filter((o) => "name" in o || "photo" in o).map((o) => o.quote)).toEqual(["Hidup saya berubah.", "Tanpa foto."]);
+    expect(out.filter((o) => !("name" in o) && !("photo" in o))).toHaveLength(1);
+  });
+  it("shipped testimonials never expose name/photo unless consent is true", async () => {
     const { testimonials } = await import("../../content/testimonials");
+    const shipped = visibleTestimonials(testimonials);
+    shipped.forEach((o, i) => {
+      if (!testimonials[i].consent) expect(Object.keys(o)).toEqual(["quote"]);
+    });
     expect(testimonials.every((t) => t.consent === false)).toBe(true);
   });
 });

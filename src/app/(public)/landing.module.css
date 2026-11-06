@@ -3,6 +3,7 @@
   --navy-deep: #0a1735;
   --pink: #f7d6db;
   --pink-soft: #fdf1f3;
+  /* rose #b8324f: 5.3:1 on pink-soft, 5.8:1 on white, only 4.3:1 on pink #f7d6db: never use it for text on pink. */
   --rose: #b8324f;
   --ink: #14213f;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
@@ -20,6 +21,8 @@
 .page p { margin: 0 0 1rem; max-width: 65ch; }
 .page a:focus-visible, .page summary:focus-visible { outline: 3px solid var(--rose); outline-offset: 3px; }
 
+.lompat { position: absolute; left: 0.5rem; top: -4rem; z-index: 10; padding: 0.75rem 1rem; background: #fff; color: var(--navy-deep); font-weight: 700; }
+.lompat:focus { top: 0.5rem; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; background: var(--navy-deep); color: #fff; }
 .brand { font-weight: 600; font-size: 1rem; }
 .masukKecil { color: var(--pink); font-weight: 600; min-height: 2.75rem; display: inline-flex; align-items: center; padding: 0 0.5rem; }

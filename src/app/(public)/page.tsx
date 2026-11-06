@@ -26,6 +26,7 @@ export default async function LandingPage() {
   const kutipan = visibleTestimonials(testimonials);
   return (
     <div className={styles.page}>
+      <a href="#isi" className={styles.lompat}>Lompat ke isi</a>
       <header className={styles.top}>
         <span className={styles.brand}>KEP Keuskupan Bandung</span>
         <Link href="/login" className={styles.masukKecil}>Masuk</Link>
@@ -102,8 +103,8 @@ export default async function LandingPage() {
         {kutipan.length > 0 && (
           <section className={styles.blok} aria-labelledby="kesaksian">
             <h2 id="kesaksian">{kesaksian.judul}</h2>
-            {kutipan.map((k) => (
-              <figure key={k.quote} className={styles.kutipan}>
+            {kutipan.map((k, i) => (
+              <figure key={`${i}-${k.quote.slice(0, 24)}`} className={styles.kutipan}>
                 <blockquote>{k.quote}</blockquote>
                 {k.name && (
                   <figcaption>
