@@ -215,7 +215,40 @@ function checkZip(buf: Buffer): Buffer {
   const ct = ctEntry.data.toString("utf8");
   if (/macroEnabled|vbaProject/i.test(ct)) reject("Berkas berisi makro dan ditolak");
   if (!/spreadsheetml\.sheet\.main/.test(ct)) reject("Berkas bukan Excel (.xlsx) yang sah");
-  return rebuildZip(out);
+  const keep = out.filter((e) => KEEP.test(e.name));
+  const sheets = keep.filter((e) => SHEET.test(e.name));
+  if (sheets.length === 0 || sheets.length > MAX_SHEETS) reject("Berkas Excel tidak sesuai template");
+  for (const sh of sheets) sh.data = Buffer.from(scanSheet(sh.data.toString("utf8")));
+  return rebuildZip(keep);
+}
+
+// Only what the import needs survives; everything else (docProps, drawings, comments, external links, ...) is dropped.
+const KEEP = /^(\[Content_Types\]\.xml|_rels\/\.rels|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/sharedStrings\.xml|xl\/styles\.xml|xl\/worksheets\/sheet\d+\.xml)$/;
+const SHEET = /^xl\/worksheets\/sheet\d+\.xml$/;
+const MAX_SHEETS = 5;
+
+const colNum = (letters: string) => [...letters].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+function refWithin(ref: string): boolean {
+  for (const tok of ref.split(/[\s:]+/).filter(Boolean)) {
+    const m = /^\$?([A-Z]{1,3})\$?(\d{1,7})$/.exec(tok);
+    if (!m || colNum(m[1]) > MAX_SHEET_COLS || Number(m[2]) > MAX_SHEET_ROWS) return false;
+  }
+  return true;
+}
+/** Raw-XML pre-scan (the XML is already budget capped): anything exceljs would EXPAND is refused before it loads. */
+function scanSheet(xml: string): string {
+  const bad = () => reject("Berkas Excel tidak sesuai template (struktur lembar tidak didukung)");
+  if (/<mergeCells\b|<conditionalFormatting\b/.test(xml)) bad();
+  for (const m of xml.matchAll(/\b(?:sqref|ref)="([^"]*)"/g)) if (!refWithin(m[1])) bad();
+  for (const m of xml.matchAll(/<col\b[^>]*>/g)) {
+    const mn = /\bmin="(\d+)"/.exec(m[0]);
+    const mx = /\bmax="(\d+)"/.exec(m[0]);
+    if (!mn || !mx || Number(mn[1]) > MAX_SHEET_COLS || Number(mx[1]) > MAX_SHEET_COLS) bad();
+  }
+  for (const m of xml.matchAll(/<c\s[^>]*?\br="([A-Z]+)(\d+)"/g)) if (colNum(m[1]) > MAX_SHEET_COLS || Number(m[2]) > MAX_SHEET_ROWS) bad();
+  for (const m of xml.matchAll(/<row\s[^>]*?\br="(\d+)"/g)) if (Number(m[1]) > MAX_SHEET_ROWS) bad();
+  // Parts that need relationships we dropped (links, drawings, tables) are removed; the cell text itself stays.
+  return xml.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>|<(?:drawing|legacyDrawing|tableParts|picture)\b[^>]*?(?:\/>|>[\s\S]*?<\/(?:tableParts|drawing|legacyDrawing|picture)>)/g, "");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -303,7 +336,7 @@ export async function parseImport(buf: Buffer, opts: { parokiByName?: Map<string
     if (!any) continue;
     if (++dataRows > MAX_ROWS) reject(`Maksimal ${MAX_ROWS} baris data per berkas`);
 
-    if (COLS.every((c) => c === "Paroki Asal" || cells[c] === EXAMPLE[c])) {
+    if (cells["Nama Lengkap"] === EXAMPLE["Nama Lengkap"] || cells.Email.toLowerCase() === EXAMPLE.Email || COLS.every((c) => c === "Paroki Asal" || cells[c] === EXAMPLE[c])) {
       result.errors.push({ row: r, message: "Baris CONTOH dari template belum diganti atau dihapus" });
       continue;
     }

@@ -15,13 +15,13 @@ export const maxDuration = 300;
 type Summary = { registered: number; alreadyRegistered: number; failed: number; failedRows: { row: number; message: string }[]; ulang?: boolean };
 const inflight = new Map<string, Promise<Summary>>();
 
-const RUNNING_WINDOW_MS = 30 * 60_000;
+const RUNNING_WINDOW_MS = 6 * 60_000;
 type Stored = Summary & { opId?: string; t?: number; transien?: number };
 
 /**
  * Looks at the AuditKEP rows of this KEP for the same (kep, file) opId.
  * replay: a finished run without transient failures (all failures, if any, were validation failures).
- * running: a recent start with no finish at or after it (a crashed run stops blocking after 30 minutes).
+ * running: a recent start with no finish at or after it (a crashed run stops blocking after 6 minutes).
  */
 async function previousRun(kepId: string, opId: string): Promise<{ replay: Summary | null; running: boolean }> {
   const AU = F.auditKep;
