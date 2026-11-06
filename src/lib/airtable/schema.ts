@@ -53,6 +53,9 @@ export const F = {
     statusPernikahan: "fldRKWfGerVT5jcnp",
     paroki: "fldE62NyXuSJLvM8h",
   },
+  paroki: {
+    nama: "fldskPQJ7WQgCVODZ", // "Nama Paroki" (read-only use; the table is not in ALLOWED)
+  },
   eventKep: {
     statusPersetujuan: "fldVi4F0TJit1MbmI",
     catatanSep: "fldhr8M2mdO1wHVPe",

@@ -5,3 +5,4 @@
 .error { color: #b00020; }
 .secret { word-break: break-all; font-family: monospace; }
 .google { display: flex; align-items: center; justify-content: center; min-height: 2.75rem; border: 1px solid currentColor; text-decoration: none; color: inherit; }
+.qr { width: 15rem; height: 15rem; image-rendering: pixelated; }

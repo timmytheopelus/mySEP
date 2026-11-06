@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { createRecords, listRecords, updateRecords, type AtRecord } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
 
@@ -43,10 +44,17 @@ function isActive(v: unknown): boolean {
   return v === true || (typeof v === "string" && v.trim().toLowerCase() === "aktif");
 }
 
+export type AccountRow = Account & { active: boolean };
+
 /** Maps a record to an Account; null when it is inactive or has no valid email/role. */
 function toAccount(r: AtRecord): Account | null {
+  const a = parseAccount(r);
+  return a && a.active ? a : null;
+}
+
+/** Like toAccount but keeps inactive accounts (SEP administration only). */
+function parseAccount(r: AtRecord): AccountRow | null {
   const f = r.fields;
-  if (!isActive(f[A.statusAktif])) return null;
   const email = str(f[A.email]);
   const peran = f[A.peran];
   const role = typeof peran === "string" ? ROLE_BY_LABEL[peran.trim().toLowerCase()] : undefined;
@@ -55,6 +63,7 @@ function toAccount(r: AtRecord): Account | null {
   const step = f[A.langkahTotpTerakhir];
   const failed = f[A.gagalLogin];
   return {
+    active: isActive(f[A.statusAktif]),
     id: r.id,
     email: normalizeEmail(email),
     nama: str(f[A.nama]) ?? "",
@@ -136,4 +145,63 @@ export async function bindGoogleSub(id: string, sub: string, email: string): Pro
     { [AU.aksi]: "google_bind", [AU.pelaku]: email, [AU.targetId]: id, [AU.sesudah]: sub.slice(-4) },
   ]);
   return (await getAccountById(id))?.googleSub ?? null;
+}
+
+// ---- SEP administration (Task 8) -------------------------------------------------------------
+
+export const ROLE_LABEL: Record<Role, string> = { SEP: "SEP", PIC: "PIC Paroki", ADMIN: "Admin Paroki" };
+
+/** Every account, active or not. */
+export async function listAllAccounts(): Promise<AccountRow[]> {
+  const recs = await listRecords(T.akunKep, { fields: FIELDS });
+  return recs.map(parseAccount).filter((a): a is AccountRow => a !== null);
+}
+
+/** Account by record id regardless of status; null when unknown or malformed. */
+export async function getAccountAnyStatus(id: string): Promise<AccountRow | null> {
+  if (!/^rec[A-Za-z0-9]{10,}$/.test(id)) return null;
+  const recs = await listRecords(T.akunKep, { fields: FIELDS, filterByFormula: `RECORD_ID() = ${q(id)}`, maxRecords: 1 });
+  const r = recs.find((x) => x.id === id);
+  return r ? parseAccount(r) : null;
+}
+
+/** True when ANY account (active or not) already uses this email. */
+export async function emailExists(email: string): Promise<boolean> {
+  const e = normalizeEmail(email);
+  const recs = await listRecords(T.akunKep, { fields: [A.email], filterByFormula: `LOWER({${A.email}}) = ${q(e)}`, maxRecords: 2 });
+  return recs.some((r) => typeof r.fields[A.email] === "string" && normalizeEmail(r.fields[A.email] as string) === e);
+}
+
+export async function insertAccount(fields: Record<string, unknown>): Promise<string> {
+  const [rec] = await createRecords(T.akunKep, [fields]);
+  return rec.id;
+}
+
+export async function patchAccount(id: string, fields: Record<string, unknown>): Promise<void> {
+  await updateRecords(T.akunKep, [{ id, fields }]);
+}
+
+/** Sets a new password hash and clears the failure counter/lock. */
+export async function savePassword(id: string, hash: string): Promise<void> {
+  await patchAccount(id, { [A.hashPassword]: hash, [A.gagalLogin]: 0, [A.waktuKunci]: null });
+}
+
+/** Persist only the used TOTP step (re-authentication of a logged-in user). */
+export async function saveTotpStep(id: string, step: number): Promise<void> {
+  await patchAccount(id, { [A.langkahTotpTerakhir]: step });
+}
+
+/** Append-only audit row. Throws on failure so callers can refuse to act unaudited. */
+export async function writeAudit(row: { aksi: string; pelaku: string; targetId: string; sebelum?: string; sesudah?: string }): Promise<void> {
+  const AU = F.auditKep;
+  await createRecords(T.auditKep, [
+    {
+      [AU.aksi]: row.aksi,
+      [AU.pelaku]: row.pelaku,
+      [AU.targetId]: row.targetId,
+      ...(row.sebelum !== undefined ? { [AU.sebelum]: row.sebelum } : {}),
+      ...(row.sesudah !== undefined ? { [AU.sesudah]: row.sesudah } : {}),
+      [AU.opId]: randomUUID(),
+    },
+  ]);
 }

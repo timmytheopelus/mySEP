@@ -11,13 +11,13 @@ import {
   readPreauth,
   sessionCookie,
 } from "@/lib/auth/session";
+import { enrollmentPayload } from "@/lib/auth/enrollment";
 import { runInBackground } from "@/lib/background";
 import { clientIp, guardPost, json, serverError, tooMany, withCookies } from "@/lib/http/auth-http";
 import { limitKey, rateLimit } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
 
-const ISSUER = "KEP Keuskupan Bandung";
 const WINDOW_S = 15 * 60;
 const INVALID = "Sesi pendaftaran MFA tidak valid. Silakan masuk kembali.";
 
@@ -62,9 +62,6 @@ export async function POST(req: Request): Promise<Response> {
   try {
     if (code === undefined) {
       const secret = generateTotpSecret();
-      const uri =
-        `otpauth://totp/${encodeURIComponent(`${ISSUER}:${acc.email}`)}` +
-        `?secret=${secret}&issuer=${encodeURIComponent(ISSUER)}`;
       const token = await issuePreauth({
         accountId: acc.id,
         passwordHash: credential,
@@ -73,7 +70,7 @@ export async function POST(req: Request): Promise<Response> {
         origIat: pre.origIat,
       });
       const remaining = Math.max(1, pre.origIat + PREAUTH_TTL_S - Math.floor(Date.now() / 1000));
-      return withCookies(json({ secret, otpauthUri: uri }), [preauthCookie(token, remaining)]);
+      return withCookies(json(await enrollmentPayload(acc.email, secret)), [preauthCookie(token, remaining)]);
     }
 
     if (typeof code !== "string" || !pre.pendingSecretEnc) return json({ error: "Permintaan tidak valid" }, 400);

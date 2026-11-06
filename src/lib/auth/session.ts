@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
-import { getAccountById, mfaRequired, type Role } from "@/lib/accounts/repo";
+import { getAccountById, mfaRequired, type Account, type Role } from "@/lib/accounts/repo";
 
 export type { Role };
 export type Session = { accountId: string; email: string; role: Role; parokiId: string | null };
@@ -39,14 +39,21 @@ const nowS = () => Math.floor(Date.now() / 1000);
 /** JWT HS256, 15 minutes, never beyond `startedAt` + 8 hours. `amr` records how the user authenticated. */
 export async function issueSession(
   session: Session,
-  opts: { startedAt?: number; amr?: Amr[]; pf?: string } = {},
+  opts: { startedAt?: number; amr?: Amr[]; pf?: string; sv?: string } = {},
 ): Promise<string> {
-  // `pf` binds the session to the current password hash: a reset/change voids older sessions.
-  const pf = opts.pf ?? credentialFingerprint((await getAccountById(session.accountId))?.passwordHash ?? "");
+  // `pf` binds the session to the current password hash, `sv` to role/paroki/Google/MFA state: a reset or
+  // an administrative change voids older sessions.
+  let pf = opts.pf;
+  let sv = opts.sv;
+  if (pf === undefined || sv === undefined) {
+    const acc = await getAccountById(session.accountId);
+    pf ??= credentialFingerprint(acc?.passwordHash ?? "");
+    sv ??= accountVersion(acc);
+  }
   const iat = nowS();
   const startedAt = opts.startedAt ?? iat;
   const exp = Math.min(iat + SESSION_TTL_S, startedAt + SESSION_MAX_S);
-  return new SignJWT({ sa: startedAt, amr: opts.amr ?? ["pwd"], pf })
+  return new SignJWT({ sa: startedAt, amr: opts.amr ?? ["pwd"], pf, sv })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setSubject(session.accountId)
@@ -65,7 +72,7 @@ export function getCookie(cookieHeader: string, name: string): string | null {
 }
 
 // Account liveness cache: deactivating an account revokes sessions within ACCOUNT_CACHE_MS.
-type Live = { at: number; session: Session | null; pf: string };
+type Live = { at: number; session: Session | null; pf: string; sv: string };
 const live = new Map<string, Live>();
 export function clearSessionCache(): void {
   live.clear();
@@ -75,21 +82,24 @@ export function invalidateAccount(accountId: string): void {
   live.delete(accountId);
 }
 
-async function liveSession(accountId: string): Promise<{ session: Session; pf: string } | null> {
+async function liveSession(accountId: string): Promise<{ session: Session; pf: string; sv: string } | null> {
   const hit = live.get(accountId);
-  if (hit && Date.now() - hit.at < ACCOUNT_CACHE_MS) return hit.session ? { session: hit.session, pf: hit.pf } : null;
+  if (hit && Date.now() - hit.at < ACCOUNT_CACHE_MS) return hit.session ? { session: hit.session, pf: hit.pf, sv: hit.sv } : null;
   const acc = await getAccountById(accountId);
   // Role and paroki always come from the live account, not from the token.
   const session = acc ? { accountId: acc.id, email: acc.email, role: acc.role, parokiId: acc.parokiId } : null;
   const pf = credentialFingerprint(acc?.passwordHash ?? "");
-  live.set(accountId, { at: Date.now(), session, pf });
-  return session ? { session, pf } : null;
+  const sv = accountVersion(acc);
+  live.set(accountId, { at: Date.now(), session, pf, sv });
+  return session ? { session, pf, sv } : null;
 }
 
-async function resolve(cookieHeader: string): Promise<{ session: Session; startedAt: number; amr: Amr[]; pf: string } | null> {
+async function resolve(
+  cookieHeader: string,
+): Promise<{ session: Session; startedAt: number; amr: Amr[]; pf: string; sv: string } | null> {
   const token = getCookie(cookieHeader ?? "", SESSION_COOKIE);
   if (!token) return null;
-  let sub: string, startedAt: number, amr: Amr[], tokenPf: string;
+  let sub: string, startedAt: number, amr: Amr[], tokenPf: string, tokenSv: string;
   try {
     const { payload } = await jwtVerify(token, secretKey(), {
       algorithms: ["HS256"],
@@ -97,10 +107,11 @@ async function resolve(cookieHeader: string): Promise<{ session: Session; starte
       audience: AUD_SESSION,
       requiredClaims: REQUIRED,
     });
-    if (!payload.sub || typeof payload.sa !== "number" || typeof payload.pf !== "string" || !Array.isArray(payload.amr)) return null;
+    if (!payload.sub || typeof payload.sa !== "number" || typeof payload.pf !== "string" || typeof payload.sv !== "string" || !Array.isArray(payload.amr)) return null;
     sub = payload.sub;
     startedAt = payload.sa;
     tokenPf = payload.pf;
+    tokenSv = payload.sv;
     amr = payload.amr.filter((x): x is Amr => x === "pwd" || x === "otp" || x === "google");
   } catch {
     return null;
@@ -109,10 +120,12 @@ async function resolve(cookieHeader: string): Promise<{ session: Session; starte
   if (!liveS) return null;
   // Password reset/change since this token was issued: void it.
   if (liveS.pf !== tokenPf) return null;
+  // Role, paroki, Google binding or MFA secret changed since issue: void it.
+  if (liveS.sv !== tokenSv) return null;
   const session = liveS.session;
   // SEP/PIC need a second factor: a token minted without OTP is void if the live role requires it.
   if (mfaRequired(session.role) && !amr.includes("otp")) return null;
-  return { session, startedAt, amr, pf: tokenPf };
+  return { session, startedAt, amr, pf: tokenPf, sv: tokenSv };
 }
 
 export async function readSession(cookieHeader: string): Promise<Session | null> {
@@ -122,7 +135,22 @@ export async function readSession(cookieHeader: string): Promise<Session | null>
 /** Valid session plus a fresh token (sliding expiry, capped at 8 h from first login). */
 export async function renewSession(cookieHeader: string): Promise<{ session: Session; token: string } | null> {
   const r = await resolve(cookieHeader);
-  return r ? { session: r.session, token: await issueSession(r.session, { startedAt: r.startedAt, amr: r.amr, pf: r.pf }) } : null;
+  return r ? { session: r.session, token: await issueSession(r.session, { startedAt: r.startedAt, amr: r.amr, pf: r.pf, sv: r.sv }) } : null;
+}
+
+/** What a still-valid session proves; used to re-issue the cookie after the user's own security change. */
+export async function readSessionMeta(cookieHeader: string): Promise<{ session: Session; startedAt: number; amr: Amr[] } | null> {
+  const r = await resolve(cookieHeader);
+  return r ? { session: r.session, startedAt: r.startedAt, amr: r.amr } : null;
+}
+
+/** Fingerprint of the account state a session is valid for (everything except the password, see `pf`). */
+export function accountVersion(acc: Account | null): string {
+  if (!acc) return "";
+  return createHash("sha256")
+    .update([acc.role, acc.parokiId ?? "", acc.googleSub ?? "", acc.mfaSecretEnc ?? ""].join("|"))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /** Binds a pre-auth token to the credential it was issued for: a password change voids it. */

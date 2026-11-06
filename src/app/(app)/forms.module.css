@@ -1,0 +1,14 @@
+.main { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; }
+.form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 24rem; }
+.input, .select { min-height: 2.75rem; padding: 0 0.75rem; font-size: 1rem; }
+.button { min-height: 2.75rem; padding: 0 1rem; font-size: 1rem; cursor: pointer; }
+.small { min-height: 2.25rem; padding: 0 0.6rem; cursor: pointer; }
+.error { color: #b00020; }
+.ok { color: #1b5e20; }
+.qr { width: 15rem; height: 15rem; image-rendering: pixelated; }
+.secret { word-break: break-all; font-family: monospace; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #ccc; vertical-align: top; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.muted { color: #666; }
+@media (max-width: 40rem) { .table { display: block; overflow-x: auto; } }

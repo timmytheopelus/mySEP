@@ -10,7 +10,7 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 import { POST as linkStart } from "@/app/api/auth/google/link/route";
 import { GET as callback } from "@/app/api/auth/google/callback/route";
 import { SESSION_COOKIE, clearSessionCache, issueSession, readSession, type Session } from "@/lib/auth/session";
-import { FLOW_COOKIE, readFlowCookie } from "@/lib/auth/google";
+import { FLOW_COOKIE, buildGoogleAuthUrl, completeGoogleLink, readFlowCookie } from "@/lib/auth/google";
 import { generateTotpSecret } from "@/lib/auth/totp";
 import { resetRateLimitMemory } from "@/lib/ratelimit";
 
@@ -79,12 +79,13 @@ async function start(s: Session, body: unknown) {
 }
 const flowCookieOf = (res: Response) => res.headers.getSetCookie().find((c) => c.startsWith(FLOW_COOKIE + "="))!.split(";")[0];
 
-async function finishLink(s: Session, googleClaims: Record<string, unknown>, o: { sessionAs?: Session } = {}) {
+async function finishLink(s: Session, googleClaims: Record<string, unknown>, o: { sessionAs?: Session; boundMeanwhile?: string } = {}) {
   const res = await start(s, s.role === "ADMIN" ? { password: PASSWORD } : { code: generateSync({ secret }) });
   expect(res.status).toBe(200);
   const { url } = await res.json();
   const u = new URL(url);
   const flow = (await readFlowCookie(flowCookieOf(res)))!;
+  if (o.boundMeanwhile) row(s.accountId).fields[A.idGoogle] = o.boundMeanwhile;
   nextIdToken = await mint({ nonce: u.searchParams.get("nonce"), ...googleClaims });
   const cb = await callback(
     new Request(`https://kep.example.org/api/auth/google/callback?code=c&state=${u.searchParams.get("state")}`, {
@@ -133,10 +134,30 @@ describe("link Google from a logged-in session", () => {
   });
 
   it("refuses to overwrite a different existing binding (SEP must clear it first)", async () => {
-    row(pic.accountId).fields[A.idGoogle] = "g-old";
-    const { cb } = await finishLink(pic, { email: "pic@paroki.id", sub: "g-new" });
+    expect((await (async () => { row(pic.accountId).fields[A.idGoogle] = "g-old"; const r = await start(pic, { code: generateSync({ secret }) }); delete row(pic.accountId).fields[A.idGoogle]; clearSessionCache(); return r; })()).status).toBe(409);
+    const { cb } = await finishLink(pic, { email: "pic@paroki.id", sub: "g-new" }, { boundMeanwhile: "g-old" });
     expect(cb.headers.get("location")).toContain("google=gagal");
     expect(row(pic.accountId).fields[A.idGoogle]).toBe("g-old");
+  });
+
+  it("completeGoogleLink never overwrites another sub and rejects non-link flows", async () => {
+    row(pic.accountId).fields[A.idGoogle] = "g-old";
+    const { cookies } = buildGoogleAuthUrl();
+    const flow = { ...cookies, linkAccountId: pic.accountId };
+    nextIdToken = await mint({ nonce: flow.nonce, email: pic.email, sub: "g-new" });
+    expect(await completeGoogleLink({ code: "c", state: flow.state }, flow, pic.accountId)).toEqual({ ok: false });
+    expect(row(pic.accountId).fields[A.idGoogle]).toBe("g-old");
+    const plain = buildGoogleAuthUrl().cookies;
+    nextIdToken = await mint({ nonce: plain.nonce, email: pic.email, sub: "g-new" });
+    expect(await completeGoogleLink({ code: "c", state: plain.state }, plain, pic.accountId)).toEqual({ ok: false });
+  });
+
+  it("a link flow can never sign anyone in through the login completion", async () => {
+    const { completeGoogleLogin } = await import("@/lib/auth/google");
+    const { cookies } = buildGoogleAuthUrl();
+    const flow = { ...cookies, linkAccountId: pic.accountId };
+    nextIdToken = await mint({ nonce: flow.nonce, email: pic.email, sub: "g-x" });
+    expect(await completeGoogleLogin({ code: "c", state: flow.state }, flow)).toEqual({ ok: false });
   });
 
   it("the flow only completes for the session that started it", async () => {

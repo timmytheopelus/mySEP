@@ -32,6 +32,14 @@ describe("Content-Security-Policy", () => {
     const frame = csp.split(";").map((s) => s.trim()).find((s) => s.startsWith("frame-src"))!;
     expect(frame).toBe("frame-src https://www.youtube-nocookie.com https://challenges.cloudflare.com");
   });
+  it("allows data: images only (TOTP QR code) and nowhere else", () => {
+    const dir = (n: string) => csp.split(";").map((x) => x.trim()).find((x) => x.startsWith(n))!;
+    expect(dir("img-src")).toContain("data:");
+    for (const n of ["default-src", "script-src", "style-src", "connect-src", "frame-src", "object-src"]) {
+      expect(dir(n)).not.toContain("data:");
+    }
+    expect(csp).not.toMatch(/(^|;)\s*img-src[^;]*\*/);
+  });
   it("locks down object-src, base-uri, frame-ancestors", () => {
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("base-uri 'self'");

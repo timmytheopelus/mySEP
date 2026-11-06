@@ -2,16 +2,20 @@ import { recordSuccess } from "@/lib/accounts/repo";
 import {
   FLOW_COOKIE,
   appOrigin,
+  completeGoogleLink,
   completeGoogleLogin,
   readFlowCookie,
+  type FlowCookies,
 } from "@/lib/auth/google";
 import {
   PREAUTH_TTL_S,
   cookieString,
+  invalidateAccount,
   issuePreauth,
   issueSession,
   preauthCookie,
   preauthVerifyCookie,
+  readSessionMeta,
   sessionCookie,
 } from "@/lib/auth/session";
 import { clientIp, withCookies } from "@/lib/http/auth-http";
@@ -36,6 +40,24 @@ function redirect(path: string, cookies: string[]): Response {
 // One uniform failure for everything: bad state, bad token, unknown/inactive/locked/mismatched account.
 const failure = () => redirect("/login?error=google", [clearFlow()]);
 
+/** "Hubungkan Google" from a logged-in session: never signs in; re-issues the cookie after the change. */
+async function linkCallback(req: Request, params: { code: string; state: string }, flow: FlowCookies): Promise<Response> {
+  const bad = () => redirect("/profil?google=gagal", [clearFlow()]);
+  try {
+    const meta = await readSessionMeta(req.headers.get("cookie") ?? "");
+    if (!meta || meta.session.accountId !== flow.linkAccountId) return bad();
+    const r = await completeGoogleLink(params, flow, meta.session.accountId);
+    if (!r.ok) return bad();
+    invalidateAccount(meta.session.accountId);
+    // The Google binding is part of the session version: keep this user logged in.
+    const token = await issueSession(meta.session, { startedAt: meta.startedAt, amr: meta.amr });
+    return redirect("/profil?google=ok", [clearFlow(), sessionCookie(token)]);
+  } catch {
+    console.error("google link callback failed");
+    return bad();
+  }
+}
+
 export async function GET(req: Request): Promise<Response> {
   const lim = await rateLimit(limitKey("google-cb-ip", clientIp(req)), 60, 15 * 60);
   if (!lim.ok) return failure();
@@ -46,6 +68,8 @@ export async function GET(req: Request): Promise<Response> {
   if (url.searchParams.has("error") || !code || !state) return failure();
   const flow = await readFlowCookie(req.headers.get("cookie") ?? "");
   if (!flow) return failure();
+
+  if (flow.linkAccountId) return linkCallback(req, { code, state }, flow);
 
   const r = await completeGoogleLogin({ code, state }, flow);
   if (!r.ok) return failure();

@@ -25,13 +25,17 @@ export default function LoginForm({ initial = {} }: { initial?: Initial }) {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [secret, setSecret] = useState("");
+  const [qr, setQr] = useState("");
   const [error, setError] = useState(initial.googleError ? "Login Google gagal. Gunakan akun yang terdaftar atau masuk dengan email dan password." : "");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (initial.step !== "enroll") return;
     post("/api/auth/mfa/enroll", {}).then((s) => {
-      if (s.data.secret) setSecret(s.data.secret);
+      if (s.data.secret) {
+        setSecret(s.data.secret);
+        setQr(s.data.qr ?? "");
+      }
       else setError(s.data.error ?? "Sesi habis. Silakan masuk kembali.");
     });
   }, [initial.step]);
@@ -59,6 +63,7 @@ export default function LoginForm({ initial = {} }: { initial?: Initial }) {
       if (r.data.next === "mfa_enroll") {
         const s = await post("/api/auth/mfa/enroll", {});
         setSecret(s.data.secret ?? "");
+        setQr(s.data.qr ?? "");
         setCode("");
         return void setStep("enroll");
       }
@@ -81,6 +86,10 @@ export default function LoginForm({ initial = {} }: { initial?: Initial }) {
       {step === "enroll" && (
         <>
           <p>Pindai kode ini di aplikasi autentikator, atau masukkan kunci berikut:</p>
+          {qr && (
+            // eslint-disable-next-line @next/next/no-img-element -- server-rendered data URI, nothing to optimise
+            <img className={styles.qr} src={qr} alt="Kode QR autentikator" />
+          )}
           <p className={styles.secret}>{secret}</p>
         </>
       )}
@@ -92,7 +101,10 @@ export default function LoginForm({ initial = {} }: { initial?: Initial }) {
         {step === "credentials" ? "Masuk" : "Verifikasi"}
       </button>
       {step === "credentials" && (
-        <a className={styles.google} href="/api/auth/google/start">Masuk dengan Google</a>
+        <>
+          <a className={styles.google} href="/api/auth/google/start">Masuk dengan Google</a>
+          <a href="/lupa-password">Lupa password?</a>
+        </>
       )}
     </form>
   );

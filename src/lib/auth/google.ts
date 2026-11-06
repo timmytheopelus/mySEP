@@ -4,6 +4,7 @@ import { SignJWT, createRemoteJWKSet, jwtVerify } from "jose";
 import {
   bindGoogleSub,
   getAccountByEmail,
+  getAccountById,
   mfaRequired,
   type Account,
 } from "@/lib/accounts/repo";
@@ -17,7 +18,7 @@ import { limitKey, rateLimit } from "@/lib/ratelimit";
  * single use, and the ID token is verified against Google's JWKS (RS256 only). Only an existing, active
  * AkunKEP row may sign in; nothing is created and every failure is the same `{ ok: false }`.
  */
-export type FlowCookies = { state: string; nonce: string; verifier: string };
+export type FlowCookies = { state: string; nonce: string; verifier: string; linkAccountId?: string };
 export type GoogleLoginResult =
   | { ok: true; next: "session" | "mfa" | "mfa_enroll"; account: Account }
   | { ok: false };
@@ -75,7 +76,8 @@ function flowKey(): Uint8Array {
 
 /** Packs state/nonce/verifier into one HS256-signed token for the httpOnly cookie. */
 export async function signFlowCookie(c: FlowCookies): Promise<string> {
-  return new SignJWT({ s: c.state, n: c.nonce, v: c.verifier })
+  // `la`: the flow was started by a logged-in user who wants to LINK Google to that account.
+  return new SignJWT({ s: c.state, n: c.nonce, v: c.verifier, ...(c.linkAccountId ? { la: c.linkAccountId } : {}) })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer("kep")
     .setAudience(AUD_FLOW)
@@ -96,7 +98,7 @@ export async function readFlowCookie(cookieHeader: string): Promise<FlowCookies 
     });
     const { s, n, v } = payload;
     if (typeof s !== "string" || typeof n !== "string" || typeof v !== "string") return null;
-    return { state: s, nonce: n, verifier: v };
+    return { state: s, nonce: n, verifier: v, ...(typeof payload.la === "string" ? { linkAccountId: payload.la } : {}) };
   } catch {
     return null;
   }
@@ -136,6 +138,36 @@ function googleIsAuthoritative(email: string, hd: unknown): boolean {
   return typeof hd === "string" && hd !== "" && hd.toLowerCase() === domain;
 }
 
+type GoogleIdentity = { sub: string; email: string; hd: unknown };
+
+/** State check (single use), code exchange and full ID token validation. Null on any failure; never throws. */
+async function verifyGoogleIdentity(params: { code: string; state: string }, cookies: FlowCookies): Promise<GoogleIdentity | null> {
+  try {
+    if (!params.code || !params.state || !safeEqual(params.state, cookies.state)) return null;
+    // Single use: the first attempt for a given state wins, replays fail closed.
+    const claim = await rateLimit(limitKey("google-state", cookies.state), 1, FLOW_TTL_S + 60);
+    if (!claim.ok) return null;
+
+    const idToken = await exchangeCode(params.code, cookies.verifier);
+    if (!idToken) return null;
+    const { payload } = await jwtVerify(idToken, keys(), {
+      algorithms: ["RS256"],
+      issuer: ISSUERS,
+      audience: config().clientId,
+      requiredClaims: ["exp", "iat", "sub", "email", "nonce"],
+    });
+    if (typeof payload.nonce !== "string" || !safeEqual(payload.nonce, cookies.nonce)) return null;
+    // azp (when present) must be us; with a single aud it is optional, with several it is mandatory.
+    if (payload.azp !== undefined && payload.azp !== config().clientId) return null;
+    if (Array.isArray(payload.aud) && payload.azp === undefined) return null;
+    if (payload.email_verified !== true) return null;
+    if (typeof payload.email !== "string" || typeof payload.sub !== "string" || !payload.sub) return null;
+    return { sub: payload.sub, email: payload.email, hd: payload.hd };
+  } catch {
+    return null;
+  }
+}
+
 /** Never throws: any error (network, config, Airtable) is a plain failure. */
 export async function completeGoogleLogin(
   params: { code: string; state: string },
@@ -143,37 +175,22 @@ export async function completeGoogleLogin(
 ): Promise<GoogleLoginResult> {
   const FAIL = { ok: false } as const;
   try {
-    if (!params.code || !params.state || !safeEqual(params.state, cookies.state)) return FAIL;
-    // Single use: the first attempt for a given state wins, replays fail closed.
-    const claim = await rateLimit(limitKey("google-state", cookies.state), 1, FLOW_TTL_S + 60);
-    if (!claim.ok) return FAIL;
+    // A link flow (started from a logged-in session) must never sign anyone in.
+    if (cookies.linkAccountId) return FAIL;
+    const id = await verifyGoogleIdentity(params, cookies);
+    if (!id) return FAIL;
 
-    const idToken = await exchangeCode(params.code, cookies.verifier);
-    if (!idToken) return FAIL;
-    const { payload } = await jwtVerify(idToken, keys(), {
-      algorithms: ["RS256"],
-      issuer: ISSUERS,
-      audience: config().clientId,
-      requiredClaims: ["exp", "iat", "sub", "email", "nonce"],
-    });
-    if (typeof payload.nonce !== "string" || !safeEqual(payload.nonce, cookies.nonce)) return FAIL;
-    // azp (when present) must be us; with a single aud it is optional, with several it is mandatory.
-    if (payload.azp !== undefined && payload.azp !== config().clientId) return FAIL;
-    if (Array.isArray(payload.aud) && payload.azp === undefined) return FAIL;
-    if (payload.email_verified !== true) return FAIL;
-    if (typeof payload.email !== "string" || typeof payload.sub !== "string" || !payload.sub) return FAIL;
-
-    const acc = await getAccountByEmail(payload.email); // active only, case-insensitive
+    const acc = await getAccountByEmail(id.email); // active only, case-insensitive
     if (!acc || isLocked(acc.lockedUntil, new Date())) return FAIL;
 
     if (acc.googleSub === null) {
-      // Trust on first use only where Google is authoritative for the address. Linking for other
-      // addresses must come from an already authenticated session (Task 8), never from this flow.
-      if (!googleIsAuthoritative(payload.email, payload.hd)) return FAIL;
-      const stored = await bindGoogleSub(acc.id, payload.sub, acc.email);
-      if (stored === null || !safeEqual(stored, payload.sub)) return FAIL; // lost a concurrent bind
-      acc.googleSub = payload.sub;
-    } else if (!safeEqual(acc.googleSub, payload.sub)) {
+      // Trust on first use only where Google is authoritative for the address. Other addresses link from
+      // an already authenticated session (completeGoogleLink), never from this flow.
+      if (!googleIsAuthoritative(id.email, id.hd)) return FAIL;
+      const stored = await bindGoogleSub(acc.id, id.sub, acc.email);
+      if (stored === null || !safeEqual(stored, id.sub)) return FAIL; // lost a concurrent bind
+      acc.googleSub = id.sub;
+    } else if (!safeEqual(acc.googleSub, id.sub)) {
       return FAIL;
     }
 
@@ -181,5 +198,29 @@ export async function completeGoogleLogin(
     return { ok: true, next, account: acc };
   } catch {
     return FAIL;
+  }
+}
+
+/**
+ * Links Google to the logged-in account that started the flow (`cookies.linkAccountId`, re-authenticated
+ * before the flow began). The Google address must equal the account email (later Google logins look the
+ * account up by that address) and an existing different binding is never overwritten: SEP clears it first.
+ */
+export async function completeGoogleLink(
+  params: { code: string; state: string },
+  cookies: FlowCookies,
+  sessionAccountId: string,
+): Promise<{ ok: boolean }> {
+  try {
+    if (!cookies.linkAccountId || cookies.linkAccountId !== sessionAccountId) return { ok: false };
+    const id = await verifyGoogleIdentity(params, cookies);
+    if (!id) return { ok: false };
+    const acc = await getAccountById(sessionAccountId);
+    if (!acc || acc.email !== id.email.trim().toLowerCase()) return { ok: false };
+    if (acc.googleSub !== null) return { ok: acc.googleSub === id.sub }; // already linked to this identity
+    const stored = await bindGoogleSub(acc.id, id.sub, acc.email);
+    return { ok: stored !== null && safeEqual(stored, id.sub) };
+  } catch {
+    return { ok: false };
   }
 }

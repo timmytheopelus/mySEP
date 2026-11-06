@@ -215,6 +215,19 @@ describe("/api/auth/mfa/manage (logged in)", () => {
     expect(decryptSecret(String(row("recADM2000000001").fields[A.rahasiaMfa]))).toBe(old);
   });
 
+  it("replacing with the current code at both steps works and keeps the user logged in", async () => {
+    const old = generateTotpSecret();
+    await seedAccount({ id: "recADM2000000001", email: "adm2@x.id", peran: "Admin Paroki", mfaSecret: old, fields: { [A.paroki]: [PA] } });
+    const me: Session = { accountId: "recADM2000000001", email: "adm2@x.id", role: "ADMIN", parokiId: PA };
+    const b = await (await call(mfaManage, { currentCode: code(old) }, { as: me })).json();
+    const done = await call(mfaManage, { pending: b.pending, code: code(b.secret), currentCode: code(old) }, { as: me });
+    expect(done.status).toBe(200);
+    expect(decryptSecret(String(row("recADM2000000001").fields[A.rahasiaMfa]))).toBe(b.secret);
+    const set = done.headers.getSetCookie().find((c) => c.startsWith(SESSION_COOKIE + "="))!;
+    expect(await readSession(set.split(";")[0])).not.toBeNull();
+    expect((store[T.auditKep] ?? []).some((a) => a.fields[F.auditKep.aksi] === "mfa_ganti")).toBe(true);
+  });
+
   it("a pending blob from another account is useless", async () => {
     const b = await (await call(mfaManage, {}, { as: adm })).json();
     const res = await call(mfaManage, { pending: b.pending, code: code(b.secret) }, { as: pic });

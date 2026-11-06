@@ -101,7 +101,24 @@ describe("session", () => {
     expect(await readSession(cookie(t))).toBeNull();
     store[T.akunKep][0].fields[F.akunKep.peran] = "Admin Paroki";
     clearSessionCache();
-    expect(await readSession(cookie(t))).not.toBeNull();
+    expect(await readSession(cookie(t))).toBeNull(); // role change voids the old token (sv) anyway
+    const t2 = await issueSession({ ...sess, role: "ADMIN" }, { amr: ["pwd"] });
+    expect(await readSession(cookie(t2))).not.toBeNull();
+  });
+
+  it("a role, paroki, Google or MFA change voids older sessions (sv claim)", async () => {
+    for (const [field, value] of [
+      [F.akunKep.peran, "Admin Paroki"],
+      [F.akunKep.paroki, ["recPAROKIOTHER001"]],
+      [F.akunKep.idGoogle, "g-sub"],
+    ] as const) {
+      clearSessionCache();
+      const t = await issueSession(sess, OTP);
+      expect(await readSession(cookie(t))).not.toBeNull();
+      store[T.akunKep][0].fields[field] = value as never;
+      clearSessionCache();
+      expect(await readSession(cookie(t))).toBeNull();
+    }
   });
 
   it("promoting an MFA-less ADMIN session to PIC voids it (role is live)", async () => {

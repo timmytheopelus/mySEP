@@ -1,4 +1,5 @@
 import "server-only";
+import { HttpError } from "@/lib/http/errors";
 
 /** Shared by every state-changing auth route (Task 7 reuses it). */
 
@@ -41,4 +42,15 @@ export function clientIp(req: Request): string {
 export function withCookies(res: Response, cookies: string[]): Response {
   for (const c of cookies) res.headers.append("Set-Cookie", c);
   return res;
+}
+
+/** JSON object body or HttpError(400); unknown shapes (arrays, primitives) are refused. */
+export async function readBody(req: Request): Promise<Record<string, unknown>> {
+  try {
+    const b = await req.json();
+    if (b && typeof b === "object" && !Array.isArray(b)) return b as Record<string, unknown>;
+  } catch {
+    /* fall through */
+  }
+  throw new HttpError(400);
 }
