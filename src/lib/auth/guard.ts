@@ -2,7 +2,8 @@ import "server-only";
 import { getRecord, listRecords, type AtRecord } from "@/lib/airtable/client";
 import { F, T } from "@/lib/airtable/schema";
 import { HttpError } from "@/lib/http/errors";
-import { guardPost, json, serverError, withCookies } from "@/lib/http/auth-http";
+import { guardPost, json, serverError, tooMany, withCookies } from "@/lib/http/auth-http";
+import { limitKey, rateLimit } from "@/lib/ratelimit";
 import { SESSION_COOKIE, renewSession, sessionCookie, type Role, type Session } from "@/lib/auth/session";
 
 export { HttpError };
@@ -119,6 +120,14 @@ export async function listPesertaInScope(session: Session, fields: string[], eve
   return all.filter((p) => ids(p.fields[F.pendaftaranEvents.event]).some((e) => events.has(e)));
 }
 
+/**
+ * Every authenticated GET API shares one per-account budget on top of any route-specific limit, so a script or a
+ * stuck client cannot drain the base-wide Airtable budget (5 req/s per base). Generous for real use: the pewarta
+ * list loads one photo per card.
+ */
+export const GET_LIMIT = 600;
+export const GET_WINDOW_S = 600;
+
 export type AuthContext<P = Record<string, string>> = { session: Session; params: P };
 type Handler<P> = (req: Request, ctx: AuthContext<P>) => Promise<Response> | Response;
 
@@ -135,6 +144,10 @@ export function withAuth<P = Record<string, string>>(handler: Handler<P>, opts: 
       }
       const { session, token } = await authenticate(req);
       requireRole(session, opts.roles);
+      if (req.method === "GET" || req.method === "HEAD") {
+        const lim = await rateLimit(limitKey("api-get", session.accountId), GET_LIMIT, GET_WINDOW_S);
+        if (!lim.ok) return tooMany(lim.retryAfter);
+      }
       const params = (await routeCtx?.params) ?? ({} as P);
       const res = await handler(req, { session, params });
       // A handler that set or cleared the session cookie (logout, password change) wins: no renewal then.
