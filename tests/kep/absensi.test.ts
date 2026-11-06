@@ -180,7 +180,7 @@ describe("setHadir", () => {
     expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(2);
   });
   it("post-write verify: gives up with 503 after one retry", async () => {
-    vi.mocked(client.updateRecords).mockImplementation(async () => []);
+    vi.mocked(client.updateRecords).mockImplementationOnce(async () => []).mockImplementationOnce(async () => []);
     expect(await status(setHadir(pic, KEP_A, S1, pid(1), true, op("a")))).toBe(503);
     expect(vi.mocked(client.updateRecords)).toHaveBeenCalledTimes(2);
   });
