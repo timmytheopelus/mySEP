@@ -127,6 +127,13 @@ describe("getKepHub", () => {
     expect(h.absenTersedia).toBe(false);
     expect((await getKepHub(pic, KEP)).absenTersedia).toBe(true);
   });
+  it("pewarta assignment is open only while Diajukan; only the PIC may use it", async () => {
+    expect((await getKepHub(admB, KEP_B)).jadwalTerkunci).toBe(false);
+    expect((await getKepHub(pic, KEP)).jadwalTerkunci).toBe(true);
+    expect((await getKepHub(pic, KEP)).pic).toBe(true);
+    expect((await getKepHub(admB, KEP_B)).pic).toBe(false);
+    expect((await getKepHub(sep, KEP)).pic).toBe(false);
+  });
 });
 
 describe("listKepIndex", () => {

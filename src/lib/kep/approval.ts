@@ -1,17 +1,15 @@
 import "server-only";
 import { getRecord, listRecords, updateRecords } from "@/lib/airtable/client";
-import { F, PENGAJAR_STATUS_AKTIF, T, pickAllowedForRole, restrictedFor } from "@/lib/airtable/schema";
+import { F, T, pickAllowedForRole, restrictedFor } from "@/lib/airtable/schema";
 import { listAllAccounts } from "@/lib/accounts/repo";
-import { assertKepInScope, assertSubEventInScope, requireRole } from "@/lib/auth/guard";
+import { assertKepInScope, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
 import { logAudit } from "@/lib/audit/log";
 import { appBaseUrl, sendMail } from "@/lib/email";
 import { HttpError } from "@/lib/http/errors";
 import { invalidateKepCache } from "@/lib/kep/readModel";
 
-const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 const MAX_CATATAN = 2000;
-const MAX_PENGAJAR = 10;
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
@@ -153,34 +151,4 @@ export async function listKepQueue(actor: Session): Promise<AntreanItem[]> {
   return items.sort((a, b) => Number(b.status === "Diajukan") - Number(a.status === "Diajukan") || a.nama.localeCompare(b.nama));
 }
 
-const isAktif = (v: unknown) => typeof v === "string" && v.trim().toLowerCase() === PENGAJAR_STATUS_AKTIF.toLowerCase();
 
-/** PIC of the owning paroki sets the pewarta of one pertemuan; only pewarta with status Aktif are accepted. */
-export async function assignPengajar(actor: Session, subEventId: string, pengajarIds: string[]): Promise<void> {
-  requireRole(actor, ["PIC"]);
-  if (
-    !Array.isArray(pengajarIds) ||
-    pengajarIds.length > MAX_PENGAJAR ||
-    pengajarIds.some((p) => typeof p !== "string" || !REC_ID.test(p)) ||
-    new Set(pengajarIds).size !== pengajarIds.length
-  )
-    throw new HttpError(422, "Daftar pewarta tidak valid");
-  const { subEvent } = await assertSubEventInScope(actor, subEventId);
-  if (pengajarIds.length > 0) {
-    const all = await listRecords(T.pengajarKep, { fields: [F.pengajarKep.nama, F.pengajarKep.status] });
-    const active = new Set(all.filter((p) => isAktif(p.fields[F.pengajarKep.status])).map((p) => p.id));
-    if (!pengajarIds.every((p) => active.has(p))) throw new HttpError(422, "Pewarta tidak ditemukan atau tidak aktif");
-  }
-  await logAudit({
-    actorEmail: actor.email,
-    action: "assign_pengajar",
-    targetId: subEventId,
-    before: ids(subEvent.fields[F.subEvent.pengajar]),
-    after: pengajarIds,
-  });
-  try {
-    await updateRecords(T.subEvent, [{ id: subEventId, fields: pickAllowedForRole(T.subEvent, actor.role, { [F.subEvent.pengajar]: pengajarIds }) }]);
-  } finally {
-    invalidateKepCache();
-  }
-}

@@ -17,10 +17,14 @@ const PA = "recPAROKIA0000001";
 const PB = "recPAROKIB0000001";
 const pic: Session = { accountId: "recPIC0000000001", email: "pic@x.id", role: "PIC", parokiId: PA };
 const sep: Session = { accountId: "recSEPA000000001", email: "sepa@x.id", role: "SEP", parokiId: null };
-const admB: Session = { accountId: "recADMB000000001", email: "admb@x.id", role: "ADMIN", parokiId: PB };
+const picB: Session = { accountId: "recPICB000000001", email: "picb@x.id", role: "PIC", parokiId: PB };
+const admA: Session = { accountId: "recADMA000000001", email: "adma@x.id", role: "ADMIN", parokiId: PA };
 const KEP = "recKEPA0000000001";
 const KEP_B = "recKEPB0000000001";
 const KEP_X = "recKEPX0000000001"; // Ditolak
+const KEP_L = "recKEPL0000000001"; // Disetujui: locked
+const EV_L = "recEVL00000000001";
+const SL = "recSUBL000000001";
 const EV = "recEVA00000000001";
 const EV_B = "recEVB00000000001";
 const EV_X = "recEVX00000000001";
@@ -60,20 +64,23 @@ beforeEach(async () => {
   clearSessionCache();
   await seedAccount({ id: sep.accountId, email: sep.email, peran: "SEP" });
   await seedAccount({ id: pic.accountId, email: pic.email, peran: "PIC Paroki", fields: { [A.paroki]: [PA] } });
-  await seedAccount({ id: admB.accountId, email: admB.email, peran: "Admin Paroki", fields: { [A.paroki]: [PB] } });
+  await seedAccount({ id: picB.accountId, email: picB.email, peran: "PIC Paroki", fields: { [A.paroki]: [PB] } });
+  await seedAccount({ id: admA.accountId, email: admA.email, peran: "Admin Paroki", fields: { [A.paroki]: [PA] } });
   store[T.penyelenggaraKep] = [
     { id: "recORGA0000000001", fields: { [F.penyelenggaraKep.paroki]: [PA] } },
     { id: "recORGB0000000001", fields: { [F.penyelenggaraKep.paroki]: [PB] } },
   ];
   store[T.eventKep] = [
-    { id: KEP, fields: { [F.eventKep.events]: [EV], [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.statusPersetujuan]: "Disetujui" } },
+    { id: KEP, fields: { [F.eventKep.events]: [EV], [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.statusPersetujuan]: "Diajukan" } },
     { id: KEP_B, fields: { [F.eventKep.events]: [EV_B], [F.eventKep.penyelenggara]: ["recORGB0000000001"], [F.eventKep.statusPersetujuan]: "Disetujui" } },
+    { id: KEP_L, fields: { [F.eventKep.events]: [EV_L], [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.statusPersetujuan]: "Disetujui" } },
     { id: KEP_X, fields: { [F.eventKep.events]: [EV_X], [F.eventKep.penyelenggara]: ["recORGA0000000001"], [F.eventKep.statusPersetujuan]: "Ditolak" } },
   ];
   store[T.subEvent] = [
     { id: S1, fields: { [F.subEvent.acara]: [EV], [F.subEvent.agenda]: "Pertemuan 1", [F.subEvent.urutan]: 1, [F.subEvent.tanggal]: "2026-11-10" } },
     { id: S2, fields: { [F.subEvent.acara]: [EV], [F.subEvent.agenda]: "Pertemuan 2", [F.subEvent.urutan]: 2, [F.subEvent.tanggal]: "2026-11-17", [F.subEvent.pengajar]: [P1] } },
     { id: SB, fields: { [F.subEvent.acara]: [EV_B], [F.subEvent.agenda]: "Paroki B", [F.subEvent.urutan]: 1, [F.subEvent.tanggal]: "2026-11-10", [F.subEvent.pengajar]: [P2] } },
+    { id: SL, fields: { [F.subEvent.acara]: [EV_L], [F.subEvent.agenda]: "Terkunci", [F.subEvent.urutan]: 1, [F.subEvent.tanggal]: "2026-11-10" } },
     { id: SX, fields: { [F.subEvent.acara]: [EV_X], [F.subEvent.agenda]: "Ditolak", [F.subEvent.urutan]: 1, [F.subEvent.tanggal]: "2026-11-10" } },
   ];
   store[T.pengajarKep] = [
@@ -133,7 +140,7 @@ describe("POST /api/kep/[id]/subevent/[sid]/pengajar", () => {
     expect(linksOf(S1)).toBeUndefined();
   });
   it("IDOR: other parish 404; pertemuan of another KEP under an own KEP id 404; foreign KEP id 404", async () => {
-    expect((await set([P1], admB)).status).toBe(404); // parish B on KEP A
+    expect((await set([P1], picB)).status).toBe(404); // parish B on KEP A
     expect((await set([P1], pic, {}, { id: KEP, sid: SB })).status).toBe(404); // own KEP, foreign pertemuan
     expect((await set([P1], pic, {}, { id: KEP_B, sid: SB })).status).toBe(404); // foreign KEP
     expect((await set([P1], pic, {}, { id: KEP, sid: "recNOSUCHSUB00001" })).status).toBe(404);
@@ -143,8 +150,28 @@ describe("POST /api/kep/[id]/subevent/[sid]/pengajar", () => {
     expect(auditOf("pengajar_set")).toHaveLength(0);
   });
   it("409 for a rejected KEP", async () => {
-    expect((await set([P1], pic, {}, { id: KEP_X, sid: SX })).status).toBe(409);
+    const r = await set([P1], pic, {}, { id: KEP_X, sid: SX });
+    expect(r.status).toBe(409);
+    expect((await r.json()).error).toMatch(/terkunci/i);
     expect(linksOf(SX)).toBeUndefined();
+  });
+  it("locked after approval: PIC cannot toggle the assignment of a Disetujui KEP (no NoHP self-service unlock)", async () => {
+    const r = await set([P1], pic, {}, { id: KEP_L, sid: SL });
+    expect(r.status).toBe(409);
+    expect((await r.json()).error).toBe("Jadwal pewarta terkunci setelah disetujui");
+    expect((await set([], pic, { opId: "op-pengajar-0009" }, { id: KEP_L, sid: SL })).status).toBe(409);
+    expect(linksOf(SL)).toBeUndefined();
+    expect(auditOf("pengajar_set")).toHaveLength(0);
+  });
+  it("ADMIN is refused (403) everywhere: assignment is for the PIC", async () => {
+    expect((await set([P1], admA)).status).toBe(403);
+    expect(linksOf(S1)).toBeUndefined();
+  });
+  it("the SubEvent write goes through the role allowlist", async () => {
+    const { updateRecords } = await import("@/lib/airtable/client");
+    await set([P1]);
+    const call = vi.mocked(updateRecords).mock.calls.at(-1)!;
+    expect(Object.keys((call[1] as { fields: object }[])[0].fields)).toEqual([F.subEvent.pengajar]);
   });
   it("is idempotent per opId: replay does not add audit rows; a different body with the same opId is 409", async () => {
     expect((await set([P1, P2])).status).toBe(200);
@@ -173,8 +200,14 @@ describe("getJadwal", () => {
     expect(j.opsi.every((o) => Object.keys(o).sort().join() === "id,nama")).toBe(true);
     expect(JSON.stringify(j)).not.toMatch(/nohp|phone|\b0?8\d{8}|\b628/i);
   });
-  it("404 for another parish, 403 for SEP", async () => {
-    await expect(getJadwal(admB, KEP)).rejects.toMatchObject({ status: 404 });
+  it("404 for another parish, 403 for SEP and ADMIN", async () => {
+    await expect(getJadwal(picB, KEP)).rejects.toMatchObject({ status: 404 });
     await expect(getJadwal(sep, KEP)).rejects.toMatchObject({ status: 403 });
+    await expect(getJadwal(admA, KEP)).rejects.toMatchObject({ status: 403 });
+  });
+  it("reports whether the schedule is locked (anything but Diajukan) and stays readable", async () => {
+    expect((await getJadwal(pic, KEP)).terkunci).toBe(false);
+    expect((await getJadwal(pic, KEP_L)).terkunci).toBe(true);
+    expect((await getJadwal(pic, KEP_X)).terkunci).toBe(true);
   });
 });

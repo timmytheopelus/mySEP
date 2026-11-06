@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ACC, KEP_A, KEP_B, KEP_C, MOCK_PORT, NAMES_A, PENGAJAR_1, SUB_A_TODAY } from "./e2e-data";
+import { ACC, KEP_A, KEP_B, KEP_C, KEP_D, MOCK_PORT, NAMES_A, PENGAJAR_1, SUB_A_TODAY } from "./e2e-data";
 import { login, type Who } from "./auth";
 
 test.beforeEach(async ({ request }) => {
@@ -14,7 +14,7 @@ test.describe("daftar KEP (/kep)", () => {
     await as(page, "picA");
     await page.goto("/kep");
     const items = page.getByTestId("kep-item");
-    await expect(items).toHaveCount(2);
+    await expect(items).toHaveCount(3);
     await expect(items.filter({ hasText: "KEP E2E A" })).toHaveAttribute("href", `/kep/${KEP_A}`);
     await expect(page.getByText("KEP E2E C")).toHaveCount(0);
     await expect(page.getByRole("link", { name: /ajukan kep baru/i })).toBeVisible();
@@ -26,6 +26,11 @@ test.describe("daftar KEP (/kep)", () => {
     await expect(page.getByTestId("kep-item").filter({ hasText: "KEP E2E C" })).toBeVisible();
     await expect(page.getByTestId("kep-item").filter({ hasText: "KEP E2E A" })).toBeVisible();
     await expect(page.getByRole("link", { name: /ajukan kep baru/i })).toHaveCount(0);
+  });
+  test("akun tanpa paroki melihat pesan jelas, bukan galat", async ({ page }) => {
+    await as(page, "picX");
+    await page.goto("/kep");
+    await expect(page.getByText(/belum terhubung ke paroki/i)).toBeVisible();
   });
   test("tanpa sesi diarahkan ke login", async ({ page }) => {
     await page.goto("/kep");
@@ -86,6 +91,22 @@ test.describe("hub detail KEP (390x844)", () => {
     await expect(page.getByRole("button", { name: /tambah peserta/i })).toHaveCount(0);
     await expect(page.getByTestId("tautan-daftar")).toHaveCount(0);
     await expect(page.getByRole("link", { name: /absen hari ini/i })).toHaveCount(0);
+  });
+});
+
+test.describe("Admin Paroki (tanpa kelola pewarta/tautan/form)", () => {
+  test("melihat hub, tetapi tanpa tautan pendaftaran, form peserta, impor, atau jadwal", async ({ page }) => {
+    await as(page, "admA");
+    await page.goto(`/kep/${KEP_A}`);
+    await expect(page.getByTestId("peserta-item")).toHaveCount(8);
+    await expect(page.getByTestId("tautan-daftar")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /tambah peserta/i })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /impor/i })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /jadwal/i })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /absen hari ini/i })).toBeVisible();
+    expect((await page.request.get(`/api/kep/${KEP_A}/link-daftar`)).status()).toBe(403);
+    await page.goto(`/kep/${KEP_D}/jadwal`);
+    await expect(page).not.toHaveURL(/\/jadwal$/);
   });
 });
 
@@ -179,9 +200,9 @@ test.describe("tambah peserta manual", () => {
 test.describe("jadwal dan pewarta", () => {
   test("PIC menugaskan pewarta per pertemuan; tersimpan setelah muat ulang; yang tidak aktif tidak ditawarkan", async ({ page }) => {
     await as(page, "picA");
-    await page.goto(`/kep/${KEP_A}/jadwal`);
+    await page.goto(`/kep/${KEP_D}/jadwal`);
     const rows = page.getByTestId("jadwal-item");
-    await expect(rows).toHaveCount(3);
+    await expect(rows).toHaveCount(2);
     const first = rows.first();
     await expect(first).toContainText("belum ditugaskan");
     await first.getByRole("button", { name: /ubah pewarta/i }).click();
@@ -195,11 +216,25 @@ test.describe("jadwal dan pewarta", () => {
     await page.getByTestId("jadwal-item").first().getByRole("button", { name: /ubah pewarta/i }).click();
     await expect(page.getByTestId("jadwal-item").first().getByRole("checkbox", { name: "Pewarta Satu" })).toBeChecked();
     // the hub shows that pertemuan 1 now has a pewarta
-    await page.goto(`/kep/${KEP_A}`);
+    await page.goto(`/kep/${KEP_D}`);
     await expect(page.getByTestId("pertemuan-item").first()).toContainText(/pewarta/i);
     // no phone numbers anywhere
     expect((await page.locator("body").innerText()).toLowerCase()).not.toMatch(/\b08\d{8,}/);
     void PENGAJAR_1;
+  });
+  test("setelah disetujui jadwal pewarta terkunci: hanya-baca dengan penjelasan, API menolak", async ({ page }) => {
+    await as(page, "picA");
+    await page.goto(`/kep/${KEP_A}/jadwal`);
+    await expect(page.getByText(/terkunci setelah (kep )?disetujui/i).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /ubah pewarta/i })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^simpan/i })).toHaveCount(0);
+    const r = await page.request.post(`/api/kep/${KEP_A}/subevent/${SUB_A_TODAY}/pengajar`, {
+      headers: { "Sec-Fetch-Site": "same-origin" },
+      data: { pengajarIds: [PENGAJAR_1], opId: "op-e2e-lock-0001" },
+    });
+    expect(r.status()).toBe(409);
+    await page.goto(`/kep/${KEP_A}`);
+    await expect(page.getByText(/pewarta terkunci/i).first()).toBeVisible();
   });
   test("SEP dan PIC paroki lain tidak bisa membuka jadwal", async ({ page }) => {
     await as(page, "picB");
@@ -263,6 +298,41 @@ test.describe("navigasi", () => {
     await page.getByRole("navigation", { name: "Menu utama" }).getByRole("button", { name: "Keluar" }).click();
     await expect(page).toHaveURL(/\/login/);
     expect(queueAtLogout).toBe(0);
+  });
+});
+
+test.describe("keluar dengan absen belum terkirim", () => {
+  const queue = (owner: string) =>
+    new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open("keyval-store");
+      open.onupgradeneeded = () => open.result.createObjectStore("keyval");
+      open.onsuccess = () => {
+        const tx = open.result.transaction("keyval", "readwrite");
+        tx.objectStore("keyval").put([{ opId: "op-e2e-0002", url: "/x", body: {}, owner }], "kep:queue");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  test("meminta konfirmasi (bawaan: tetap di sini); antrean tidak hilang kalau batal", async ({ page }) => {
+    await as(page, "picA");
+    await page.goto("/kep");
+    await page.evaluate(queue, ACC.picA.id);
+    const nav = page.getByRole("navigation", { name: "Menu utama" });
+    await nav.getByRole("button", { name: "Keluar" }).click();
+    const dlg = page.getByRole("alertdialog");
+    await expect(dlg).toContainText("1 absen belum terkirim akan hilang. Keluar sekarang?");
+    await expect(dlg.getByRole("button", { name: /tetap di sini/i })).toBeFocused();
+    await dlg.getByRole("button", { name: /tetap di sini/i }).click();
+    await expect(dlg).toHaveCount(0);
+    await expect(page).toHaveURL(/\/kep$/);
+    const left = await page.evaluate(() => new Promise<number>((res) => {
+      const o = indexedDB.open("keyval-store");
+      o.onsuccess = () => { const g = o.result.transaction("keyval").objectStore("keyval").get("kep:queue"); g.onsuccess = () => res(Array.isArray(g.result) ? g.result.length : 0); };
+    }));
+    expect(left).toBe(1);
+    await nav.getByRole("button", { name: "Keluar" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: /keluar sekarang/i }).click();
+    await expect(page).toHaveURL(/\/login/);
   });
 });
 

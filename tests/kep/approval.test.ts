@@ -7,7 +7,7 @@ vi.mock("@/lib/kep/readModel", () => ({ invalidateKepCache: vi.fn() }));
 
 import * as client from "@/lib/airtable/client";
 import { invalidateKepCache } from "@/lib/kep/readModel";
-import { assignPengajar, decideKep, listKepQueue } from "@/lib/kep/approval";
+import { decideKep, listKepQueue } from "@/lib/kep/approval";
 import { logAudit } from "@/lib/audit/log";
 import { setMailer } from "@/lib/email";
 import { renderTemplate } from "@/lib/email/templates";
@@ -193,40 +193,5 @@ describe("listKepQueue", () => {
     await decideKep(sep, KEP, "Disetujui", "");
     expect((await listKepQueue(sep)).map((x) => x.id)).toEqual([KEPB]);
     await expect(listKepQueue(picA)).rejects.toMatchObject({ status: 403 });
-  });
-});
-
-describe("assignPengajar", () => {
-  const SUB = "recSUBA0000000001";
-  const SUBB = "recSUBB0000000001";
-  const P1 = "recPJR0000000001";
-  const P2 = "recPJR0000000002";
-  beforeEach(() => {
-    store[T.subEvent] = [
-      { id: SUB, fields: { [F.subEvent.acara]: [EV] } },
-      { id: SUBB, fields: { [F.subEvent.acara]: [EVB] } },
-    ];
-    store[T.pengajarKep] = [
-      { id: P1, fields: { [F.pengajarKep.nama]: "A", [F.pengajarKep.status]: "Aktif" } },
-      { id: P2, fields: { [F.pengajarKep.nama]: "B", [F.pengajarKep.status]: "Nonaktif" } },
-    ];
-  });
-  it("PIC assigns active pewarta, audited, cache invalidated", async () => {
-    await assignPengajar(picA, SUB, [P1]);
-    expect(rows(T.subEvent)[0].fields[F.subEvent.pengajar]).toEqual([P1]);
-    expect(rows(T.auditKep).some((a) => a.fields[F.auditKep.aksi] === "assign_pengajar" && a.fields[F.auditKep.targetId] === SUB)).toBe(true);
-    expect(invalidateKepCache).toHaveBeenCalled();
-  });
-  it("refuses non-active or unknown pewarta (422) and writes nothing", async () => {
-    await expect(assignPengajar(picA, SUB, [P1, P2])).rejects.toMatchObject({ status: 422 });
-    await expect(assignPengajar(picA, SUB, ["recGHOST000000001"])).rejects.toMatchObject({ status: 422 });
-    expect(rows(T.subEvent)[0].fields[F.subEvent.pengajar]).toBeUndefined();
-  });
-  it("other paroki's subEvent is 404; SEP/ADMIN 403; bad list 422", async () => {
-    await expect(assignPengajar(picA, SUBB, [P1])).rejects.toMatchObject({ status: 404 });
-    await expect(assignPengajar(sep, SUB, [P1])).rejects.toMatchObject({ status: 403 });
-    await expect(assignPengajar(admA, SUB, [P1])).rejects.toMatchObject({ status: 403 });
-    await expect(assignPengajar(picA, SUB, "x" as never)).rejects.toMatchObject({ status: 422 });
-    await expect(assignPengajar(picA, SUB, [P1, P1])).rejects.toMatchObject({ status: 422 });
   });
 });

@@ -10,6 +10,7 @@ export const PB = "recE2EPAROKIB0001";
 export const KEP_A = "recE2EKEPA0000001"; // 3 pertemuan: kemarin, hari ini, +7 hari; 8 peserta
 export const KEP_B = "recE2EKEPB0000001"; // 1 pertemuan hari ini (penetapan terbuka); 2 peserta
 export const KEP_C = "recE2EKEPC0000001"; // paroki lain
+export const KEP_D = "recE2EKEPD0000001"; // Diajukan, paroki A: penugasan pewarta masih terbuka
 export const SUB_A_TODAY = "recE2ESUBA0000002";
 export const PENGAJAR_1 = "recE2EPENGAJAR001";
 export const PENGAJAR_2 = "recE2EPENGAJAR002";
@@ -18,6 +19,7 @@ export const ACC = {
   picA: { id: "recE2EPICA00000001", email: "pic-a@e2e.test", role: "PIC Paroki", paroki: PA },
   admA: { id: "recE2EADMA00000001", email: "adm-a@e2e.test", role: "Admin Paroki", paroki: PA },
   picB: { id: "recE2EPICB00000001", email: "pic-b@e2e.test", role: "PIC Paroki", paroki: PB },
+  picX: { id: "recE2EPICX00000001", email: "pic-x@e2e.test", role: "PIC Paroki", paroki: null as string | null }, // akun tanpa paroki
   sep: { id: "recE2ESEP000000001", email: "sep@e2e.test", role: "SEP", paroki: null as string | null },
 } as const;
 export const PASSWORD_HASH = "e2e-password-hash";
@@ -61,10 +63,12 @@ export function seedRows(): Rows {
       row("recE2EEVA00000001", { [F.events.namaAcara]: "KEP E2E A" }),
       row("recE2EEVA00000002", { [F.events.namaAcara]: "KEP E2E B" }),
       row("recE2EEVB00000001", { [F.events.namaAcara]: "KEP E2E C" }),
+      row("recE2EEVD00000001", { [F.events.namaAcara]: "KEP E2E D" }),
     ],
     [T.eventKep]: [
       row(KEP_A, { [F.eventKep.events]: ["recE2EEVA00000001"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui", [F.eventKep.angkatan]: 3, [F.eventKep.tanggalMulai]: wib(-8), [F.eventKep.tanggalSelesai]: wib(190) }),
       row(KEP_B, { [F.eventKep.events]: ["recE2EEVA00000002"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui", [F.eventKep.angkatan]: 4 }),
+      row(KEP_D, { [F.eventKep.events]: ["recE2EEVD00000001"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Diajukan", [F.eventKep.angkatan]: 5 }),
       row(KEP_C, { [F.eventKep.events]: ["recE2EEVB00000001"], [F.eventKep.penyelenggara]: ["recE2EORGB0000001"], [F.eventKep.statusPersetujuan]: "Disetujui" }),
     ],
     [T.subEvent]: [
@@ -72,6 +76,8 @@ export function seedRows(): Rows {
       sub(SUB_A_TODAY, "recE2EEVA00000001", 2, "Pertemuan 2 - Sabda", wib(0)),
       sub("recE2ESUBA0000003", "recE2EEVA00000001", 3, "Pertemuan 3 - Penutup", wib(7)),
       sub("recE2ESUBB0000001", "recE2EEVA00000002", 1, "Pertemuan Tunggal", wib(0)),
+      sub("recE2ESUBD0000001", "recE2EEVD00000001", 1, "Pertemuan D1", wib(10)),
+      sub("recE2ESUBD0000002", "recE2EEVD00000001", 2, "Pertemuan D2", wib(17)),
       sub("recE2ESUBC0000001", "recE2EEVB00000001", 1, "Pertemuan Paroki Lain", wib(0)),
     ],
     [T.teamUmat]: [

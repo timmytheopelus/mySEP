@@ -164,6 +164,15 @@ describe("registration token: expiry, issued-at, version", () => {
   });
 });
 
+describe("ADMIN is PIC-only territory", () => {
+  it("GET link-daftar and POST rotate are 403 for Admin Paroki of the own parish", async () => {
+    expect((await get(adm)).status).toBe(403);
+    expect((await rotate({ opId: "op-rotate-0001" }, adm)).status).toBe(403);
+    expect(auditOf("link_daftar_rotasi")).toHaveLength(0);
+    expect(auditOf("link_daftar_dilihat")).toHaveLength(0);
+  });
+});
+
 describe("GET /api/kep/[id]/link-daftar", () => {
   it("401 anonymous, 403 SEP, 404 other parish / unknown / malformed id", async () => {
     expect((await get()).status).toBe(401);
@@ -177,8 +186,8 @@ describe("GET /api/kep/[id]/link-daftar", () => {
     expect(r.status).toBe(409);
     expect(JSON.stringify(await r.json())).not.toContain("/daftar/");
   });
-  it("PIC and ADMIN of the own parish get the public URL, QR data URL and expiry", async () => {
-    for (const who of [pic, adm]) {
+  it("PIC of the own parish gets the public URL, QR data URL and expiry", async () => {
+    for (const who of [pic]) {
       const r = await get(who);
       expect(r.status).toBe(200);
       const b = await r.json();
@@ -222,8 +231,8 @@ describe("GET /api/kep/[id]/link-daftar", () => {
     expect(rows[0].fields[AU.targetId]).toBe(KEP);
     expect(rows[0].fields[AU.pelaku]).toBe(pic.email);
     expect(JSON.stringify(rows[0].fields)).not.toMatch(/daftar\/|https?:/);
-    await get(adm);
-    expect(auditOf("link_daftar_dilihat")).toHaveLength(2);
+    await get(pic, KEP);
+    expect(auditOf("link_daftar_dilihat")).toHaveLength(1);
   });
 });
 
@@ -254,7 +263,7 @@ describe("POST /api/kep/[id]/link-daftar/rotate", () => {
     expect(rows[0].fields[AU.pelaku]).toBe(pic.email);
     expect(JSON.parse(String(rows[0].fields[AU.sesudah])).v).toBe(2);
     expect(JSON.stringify(rows[0].fields)).not.toContain(tokenOf(before.url));
-    const after = await (await get(adm)).json();
+    const after = await (await get(pic)).json();
     expect(after.versi).toBe(2);
     expect(await verifyRegistrationTokenCurrent(tokenOf(after.url))).toEqual({ eventId: EV });
   });
