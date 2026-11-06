@@ -6,6 +6,9 @@ export function buildCsp(nonce: string, isDev: boolean): string {
     // data: is needed for the server-rendered TOTP QR code (PNG data URI); no other directive allows it.
     "img-src 'self' data: blob: https://i.ytimg.com",
     "font-src 'self'",
+    // Explicit: with 'strict-dynamic' in script-src a worker would otherwise inherit a policy that ignores 'self'.
+    "worker-src 'self'",
+    "manifest-src 'self'",
     "connect-src 'self'",
     "frame-src https://www.youtube-nocookie.com https://challenges.cloudflare.com",
     "object-src 'none'",

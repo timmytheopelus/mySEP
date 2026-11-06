@@ -34,7 +34,7 @@ for (const [tid, rows] of Object.entries(tables)) initial[tid] = structuredClone
 const port = Number(process.env.MOCK_AIRTABLE_PORT || MOCK_PORT);
 let nextId = 1;
 const readJson = (req: IncomingMessage) =>
-  new Promise<any>((resolve) => {
+  new Promise<{ records?: { id?: string; fields?: Record<string, unknown> }[] }>((resolve) => {
     let b = "";
     req.on("data", (c) => (b += c));
     req.on("end", () => resolve(b ? JSON.parse(b) : {}));
@@ -73,7 +73,10 @@ createServer(async (req, res) => {
       } else {
         const r = rows.find((x) => x.id === rec.id);
         if (!r) return send(res, 404, { error: "NOT_FOUND" });
-        for (const [k, v] of Object.entries(rec.fields ?? {})) (v === null ? delete r.fields[k] : (r.fields[k] = v));
+        for (const [k, v] of Object.entries(rec.fields ?? {})) {
+          if (v === null) delete r.fields[k];
+          else r.fields[k] = v;
+        }
         out.push(r);
       }
     }

@@ -312,6 +312,54 @@ export async function setSemuaHadir(actor: Session, eventKepId: string, subEvent
   return { updated: total, remaining };
 }
 
+/** Latest pertemuan date (YYYY-MM-DD) of the KEP, or null when it has none. */
+async function lastMeetingDate(ctx: Ctx): Promise<string | null> {
+  const subs = await listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.tanggal] });
+  const dates = subs.filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e))).map((s) => day(s.fields[F.subEvent.tanggal])).filter(Boolean);
+  return dates.sort().at(-1) ?? null;
+}
+
+export type Pertemuan = { id: string; agenda: string; tanggal: string; urutan: number };
+
+/** Pertemuan of the KEP, oldest first, plus today's WIB date (for choosing the default one). */
+export async function listPertemuan(actor: Session, eventKepId: string): Promise<{ items: Pertemuan[]; today: string }> {
+  const ctx = await scope(actor, eventKepId);
+  const subs = await listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.agenda, F.subEvent.tanggal, F.subEvent.urutan] });
+  const items = subs
+    .filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e)))
+    .map((s) => ({ id: s.id, agenda: str(s.fields[F.subEvent.agenda]), tanggal: day(s.fields[F.subEvent.tanggal]), urutan: Number(s.fields[F.subEvent.urutan]) || 0 }))
+    .sort((a, b) => a.tanggal.localeCompare(b.tanggal) || a.urutan - b.urutan || a.id.localeCompare(b.id));
+  return { items, today: todayWib() };
+}
+
+export type PenetapanSheet = {
+  peserta: { id: string; nama: string; hasil: "" | Hasil; mundur: boolean }[];
+  terakhir: string | null;
+  today: string;
+  terbuka: boolean;
+};
+
+/** Peserta with their final result and whether results may be set yet (today >= last pertemuan date). */
+export async function getPenetapanSheet(actor: Session, eventKepId: string): Promise<PenetapanSheet> {
+  const ctx = await scope(actor, eventKepId);
+  const rows = await pesertaRows(actor, ctx);
+  const nama = await namesOf(rows.flatMap((r) => ids(r.fields[P.teamUmat]).slice(0, 1)));
+  const peserta = rows
+    .map((r) => {
+      const k = norm(r.fields[P.keterangan]);
+      return {
+        id: r.id,
+        nama: nama.get(ids(r.fields[P.teamUmat])[0] ?? "") || "(tanpa nama)",
+        hasil: (k === "LULUS" || k === "TIDAK LULUS" ? k : "") as "" | Hasil,
+        mundur: k === MUNDUR,
+      };
+    })
+    .sort((a, b) => a.nama.localeCompare(b.nama, "id", { sensitivity: "base" }) || a.id.localeCompare(b.id));
+  const terakhir = await lastMeetingDate(ctx);
+  const today = todayWib();
+  return { peserta, terakhir, today, terbuka: !!terakhir && today >= terakhir };
+}
+
 const KET_AKSI = ["peserta_mundur", "mundur_batal", "hasil_tetap"] as const;
 type KetAksi = (typeof KET_AKSI)[number];
 
@@ -385,9 +433,7 @@ export async function tetapkanHasil(actor: Session, eventKepId: string, pendafta
     },
     guard: async (ctx, _rec, sebelum) => {
       if (sebelum === MUNDUR) throw new HttpError(409, "Peserta sudah mengundurkan diri");
-      const subs = await listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.tanggal] });
-      const dates = subs.filter((s) => ids(s.fields[F.subEvent.acara]).some((e) => ctx.eventIds.includes(e))).map((s) => day(s.fields[F.subEvent.tanggal])).filter(Boolean);
-      const last = dates.sort().at(-1);
+      const last = await lastMeetingDate(ctx);
       if (!last || todayWib() < last) throw new HttpError(409, "Hasil akhir baru bisa ditetapkan mulai tanggal pertemuan terakhir");
     },
   });

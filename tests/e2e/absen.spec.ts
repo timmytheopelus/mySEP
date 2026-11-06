@@ -17,7 +17,7 @@ async function login(context: BrowserContext, who: Who) {
     .setIssuedAt(now)
     .setExpirationTime(now + 3600)
     .sign(new TextEncoder().encode(SESSION_SECRET));
-  await context.addCookies([{ name: "__Host-kep_session", value: token, url: "http://localhost:3000", secure: true, httpOnly: true }]);
+  await context.addCookies([{ name: "__Host-kep_session", value: token, domain: "localhost", path: "/", secure: true, httpOnly: true }]);
 }
 
 test.beforeEach(async ({ request, context }) => {
@@ -122,7 +122,7 @@ test.describe("halaman absen (390x844)", () => {
     await expect(status(page)).toContainText("1 gagal", { timeout: 10_000 });
     await expect(btn).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByTestId("hadir-count")).toHaveText(`0 dari ${N} hadir`);
-    await expect(page.getByRole("alert")).toContainText("Peserta sudah mengundurkan diri");
+    await expect(page.getByRole("alert").filter({ hasText: "ditolak" })).toContainText("Peserta sudah mengundurkan diri");
   });
 
   test("Tandai semua hadir meminta konfirmasi dan mengulang sampai remaining=0", async ({ page }) => {
@@ -136,7 +136,7 @@ test.describe("halaman absen (390x844)", () => {
     await open(page);
     await page.getByRole("button", { name: "Tandai semua hadir" }).click();
     const dlg = page.getByRole("alertdialog");
-    await expect(dlg).toContainText("semua peserta");
+    await expect(dlg).toContainText("peserta aktif");
     await dlg.getByRole("button", { name: "Batal" }).click();
     expect(calls).toBe(0);
     await page.getByRole("button", { name: "Tandai semua hadir" }).click();
@@ -153,7 +153,7 @@ test.describe("halaman absen (390x844)", () => {
     await page.getByRole("button", { name: `Menu untuk ${nama}` }).click();
     await page.getByRole("menuitem", { name: "Mengundurkan diri" }).click();
     await expect(row).toHaveAttribute("data-mundur", "true");
-    expect(await row.evaluate((e) => Number(getComputedStyle(e).opacity))).toBeLessThan(1);
+    expect(await row.locator("[data-row-main]").evaluate((e) => Number(getComputedStyle(e).opacity))).toBeLessThan(1);
     await expect(page.getByTestId("hadir-count")).toHaveText(`0 dari ${N - 1} hadir`);
     await expect(status(page)).toContainText("tersimpan", { timeout: 10_000 });
     await page.getByRole("button", { name: `Menu untuk ${nama}` }).click();
@@ -251,7 +251,7 @@ test.describe("penetapan", () => {
 test.describe("PWA", () => {
   test("manifest valid, service worker terdaftar di bawah CSP, tidak menyimpan API atau HTML", async ({ page }) => {
     const errors: string[] = [];
-    page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+    page.on("console", (m) => m.type() === "error" && errors.push(`${m.text()} ${m.location().url}`));
     page.on("pageerror", (e) => errors.push(e.message));
     const m = await page.request.get("/manifest.webmanifest");
     expect(m.ok()).toBe(true);

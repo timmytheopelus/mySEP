@@ -17,6 +17,14 @@ const nextConfig: NextConfig = {
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
         ],
       },
+      {
+        // The service worker must always be revalidated so updates reach installed copies.
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, max-age=0" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
     ];
   },
 };

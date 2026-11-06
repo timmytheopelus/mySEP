@@ -88,14 +88,16 @@ describe("offline queue", () => {
     expect(seen).toEqual([op(1).opId, op(2).opId]);
   });
 
-  it("ops enqueued while a flush runs are kept", async () => {
+  it("ops enqueued while a flush runs are not lost", async () => {
     await enqueue(op(1));
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const p = flush(async () => (await gate, true));
+    const seen: string[] = [];
+    const p = flush(async (o) => (await gate, seen.push(o.opId), true));
     await enqueue(op(2));
     release();
     await p;
-    expect((await pendingOps()).map((o) => o.opId)).toEqual([op(2).opId]);
+    expect(seen).toEqual([op(1).opId, op(2).opId]);
+    expect(await pendingOps()).toEqual([]);
   });
 });
