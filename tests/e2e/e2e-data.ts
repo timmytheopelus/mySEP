@@ -60,10 +60,10 @@ export function seedRows(): Rows {
       row("recE2EORGB0000001", { [F.penyelenggaraKep.paroki]: [PB] }),
     ],
     [T.events]: [
-      row("recE2EEVA00000001", { [F.events.namaAcara]: "KEP E2E A" }),
-      row("recE2EEVA00000002", { [F.events.namaAcara]: "KEP E2E B" }),
-      row("recE2EEVB00000001", { [F.events.namaAcara]: "KEP E2E C" }),
-      row("recE2EEVD00000001", { [F.events.namaAcara]: "KEP E2E D" }),
+      row("recE2EEVA00000001", { [F.events.namaAcara]: "KEP E2E A", [F.events.kelompokAcara]: "KEP", [F.events.tanggalAcara]: "2025-03-01" }),
+      row("recE2EEVA00000002", { [F.events.namaAcara]: "KEP E2E B", [F.events.kelompokAcara]: "KEP", [F.events.tanggalAcara]: "2025-03-01" }),
+      row("recE2EEVB00000001", { [F.events.namaAcara]: "KEP E2E C", [F.events.kelompokAcara]: "KEP", [F.events.tanggalAcara]: "2025-03-01" }),
+      row("recE2EEVD00000001", { [F.events.namaAcara]: "KEP E2E D", [F.events.kelompokAcara]: "KEP", [F.events.tanggalAcara]: "2025-03-01" }),
     ],
     [T.eventKep]: [
       row(KEP_A, { [F.eventKep.events]: ["recE2EEVA00000001"], [F.eventKep.penyelenggara]: ["recE2EORGA0000001"], [F.eventKep.statusPersetujuan]: "Disetujui", [F.eventKep.angkatan]: 3, [F.eventKep.tanggalMulai]: wib(-8), [F.eventKep.tanggalSelesai]: wib(190) }),

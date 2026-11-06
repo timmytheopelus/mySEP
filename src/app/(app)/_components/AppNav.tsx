@@ -20,6 +20,7 @@ export default function AppNav({ sep, owner }: { sep: boolean; owner: string }) 
   const items: Item[] = [
     { href: "/kep", label: "KEP", match: (p) => p === "/kep" || (p.startsWith("/kep/") && !p.startsWith("/kep/antrean")) },
     ...(sep ? [{ href: "/kep/antrean", label: "Antrean", match: (p: string) => p.startsWith("/kep/antrean") }] : []),
+    { href: sep ? "/dashboard/sep" : "/dashboard", label: "Dashboard", match: (p) => p.startsWith("/dashboard") },
     { href: "/pewarta", label: "Pewarta", match: (p) => p.startsWith("/pewarta") },
     { href: sep ? "/akun" : "/profil", label: "Akun", match: (p) => p.startsWith("/akun") || p.startsWith("/profil") },
   ];
