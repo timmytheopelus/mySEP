@@ -57,6 +57,7 @@ export const F = {
     statusPersetujuan: "fldVi4F0TJit1MbmI",
     catatanSep: "fldhr8M2mdO1wHVPe",
     events: "fldyZwU5mLOjjatLs",
+    penyelenggara: "fldSavviLVAE5xkxc",
   },
   penyelenggaraKep: {
     paroki: "fld2sPNpixsNArdjf",

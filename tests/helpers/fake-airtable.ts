@@ -10,6 +10,11 @@ export const store: Record<string, Row[]> = {};
 export function fakeClientModule() {
   return {
     listRecords: vi.fn(async (table: string) => structuredClone(store[table] ?? [])),
+    getRecord: vi.fn(async (table: string, id: string) => {
+      const row = (store[table] ?? []).find((x) => x.id === id);
+      if (!row) throw new Error("Airtable request failed: HTTP 404");
+      return structuredClone(row);
+    }),
     createRecords: vi.fn(async (table: string, rows: Record<string, unknown>[]) => {
       const out = rows.map((fields, i) => ({ id: `recNEW${(store[table] ?? []).length + i}`.padEnd(17, "0"), fields: structuredClone(fields) }));
       (store[table] ??= []).push(...out);

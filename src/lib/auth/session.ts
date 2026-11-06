@@ -39,12 +39,14 @@ const nowS = () => Math.floor(Date.now() / 1000);
 /** JWT HS256, 15 minutes, never beyond `startedAt` + 8 hours. `amr` records how the user authenticated. */
 export async function issueSession(
   session: Session,
-  opts: { startedAt?: number; amr?: Amr[] } = {},
+  opts: { startedAt?: number; amr?: Amr[]; pf?: string } = {},
 ): Promise<string> {
+  // `pf` binds the session to the current password hash: a reset/change voids older sessions.
+  const pf = opts.pf ?? credentialFingerprint((await getAccountById(session.accountId))?.passwordHash ?? "");
   const iat = nowS();
   const startedAt = opts.startedAt ?? iat;
   const exp = Math.min(iat + SESSION_TTL_S, startedAt + SESSION_MAX_S);
-  return new SignJWT({ email: session.email, role: session.role, pid: session.parokiId, sa: startedAt, amr: opts.amr ?? ["pwd"] })
+  return new SignJWT({ email: session.email, role: session.role, pid: session.parokiId, sa: startedAt, amr: opts.amr ?? ["pwd"], pf })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setSubject(session.accountId)
@@ -63,26 +65,31 @@ export function getCookie(cookieHeader: string, name: string): string | null {
 }
 
 // Account liveness cache: deactivating an account revokes sessions within ACCOUNT_CACHE_MS.
-type Live = { at: number; session: Session | null };
+type Live = { at: number; session: Session | null; pf: string };
 const live = new Map<string, Live>();
 export function clearSessionCache(): void {
   live.clear();
 }
+/** Call right after a password reset/change or deactivation so this process revokes immediately. */
+export function invalidateAccount(accountId: string): void {
+  live.delete(accountId);
+}
 
-async function liveSession(accountId: string): Promise<Session | null> {
+async function liveSession(accountId: string): Promise<{ session: Session; pf: string } | null> {
   const hit = live.get(accountId);
-  if (hit && Date.now() - hit.at < ACCOUNT_CACHE_MS) return hit.session;
+  if (hit && Date.now() - hit.at < ACCOUNT_CACHE_MS) return hit.session ? { session: hit.session, pf: hit.pf } : null;
   const acc = await getAccountById(accountId);
   // Role and paroki always come from the live account, not from the token.
   const session = acc ? { accountId: acc.id, email: acc.email, role: acc.role, parokiId: acc.parokiId } : null;
-  live.set(accountId, { at: Date.now(), session });
-  return session;
+  const pf = credentialFingerprint(acc?.passwordHash ?? "");
+  live.set(accountId, { at: Date.now(), session, pf });
+  return session ? { session, pf } : null;
 }
 
-async function resolve(cookieHeader: string): Promise<{ session: Session; startedAt: number; amr: Amr[] } | null> {
+async function resolve(cookieHeader: string): Promise<{ session: Session; startedAt: number; amr: Amr[]; pf: string } | null> {
   const token = getCookie(cookieHeader ?? "", SESSION_COOKIE);
   if (!token) return null;
-  let sub: string, startedAt: number, amr: Amr[];
+  let sub: string, startedAt: number, amr: Amr[], tokenPf: string;
   try {
     const { payload } = await jwtVerify(token, secretKey(), {
       algorithms: ["HS256"],
@@ -90,18 +97,22 @@ async function resolve(cookieHeader: string): Promise<{ session: Session; starte
       audience: AUD_SESSION,
       requiredClaims: REQUIRED,
     });
-    if (!payload.sub || typeof payload.sa !== "number" || !Array.isArray(payload.amr)) return null;
+    if (!payload.sub || typeof payload.sa !== "number" || typeof payload.pf !== "string" || !Array.isArray(payload.amr)) return null;
     sub = payload.sub;
     startedAt = payload.sa;
+    tokenPf = payload.pf;
     amr = payload.amr.filter((x): x is Amr => x === "pwd" || x === "otp" || x === "google");
   } catch {
     return null;
   }
-  const session = await liveSession(sub);
-  if (!session) return null;
+  const liveS = await liveSession(sub);
+  if (!liveS) return null;
+  // Password reset/change since this token was issued: void it.
+  if (liveS.pf !== tokenPf) return null;
+  const session = liveS.session;
   // SEP/PIC need a second factor: a token minted without OTP is void if the live role requires it.
   if (mfaRequired(session.role) && !amr.includes("otp")) return null;
-  return { session, startedAt, amr };
+  return { session, startedAt, amr, pf: tokenPf };
 }
 
 export async function readSession(cookieHeader: string): Promise<Session | null> {
@@ -111,7 +122,7 @@ export async function readSession(cookieHeader: string): Promise<Session | null>
 /** Valid session plus a fresh token (sliding expiry, capped at 8 h from first login). */
 export async function renewSession(cookieHeader: string): Promise<{ session: Session; token: string } | null> {
   const r = await resolve(cookieHeader);
-  return r ? { session: r.session, token: await issueSession(r.session, { startedAt: r.startedAt, amr: r.amr }) } : null;
+  return r ? { session: r.session, token: await issueSession(r.session, { startedAt: r.startedAt, amr: r.amr, pf: r.pf }) } : null;
 }
 
 /** Binds a pre-auth token to the credential it was issued for: a password change voids it. */
