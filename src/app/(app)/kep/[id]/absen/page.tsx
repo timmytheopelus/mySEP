@@ -35,7 +35,7 @@ export default async function Page({ params, searchParams }: { params: Promise<{
   return (
     <>
       <RegisterSw />
-      <AbsenClient kepId={id} sub={data.chosen} pertemuan={data.items} today={data.today} initial={data.sheet} />
+      <AbsenClient key={`${id}:${data.chosen.id}`} kepId={id} owner={session.accountId} sub={data.chosen} pertemuan={data.items} today={data.today} initial={data.sheet} />
     </>
   );
 }

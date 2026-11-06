@@ -152,6 +152,18 @@ test.describe("halaman absen (390x844)", () => {
     const row = rows(page).filter({ hasText: nama });
     await page.getByRole("button", { name: `Menu untuk ${nama}` }).click();
     await page.getByRole("menuitem", { name: "Mengundurkan diri" }).click();
+    const dlg = page.getByRole("alertdialog");
+    await expect(dlg).toContainText("Mengundurkan diri?");
+    await dlg.getByRole("button", { name: "Batal" }).click();
+    await expect(row).not.toHaveAttribute("data-mundur", "true");
+    await expect(page.getByRole("button", { name: `Menu untuk ${nama}` })).toBeFocused();
+    await page.getByRole("button", { name: `Menu untuk ${nama}` }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: `Menu untuk ${nama}` })).toBeFocused();
+    await page.getByRole("button", { name: `Menu untuk ${nama}` }).click();
+    await page.getByRole("menuitem", { name: "Mengundurkan diri" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Ya, mundurkan" }).click();
     await expect(row).toHaveAttribute("data-mundur", "true");
     expect(await row.locator("[data-row-main]").evaluate((e) => Number(getComputedStyle(e).opacity))).toBeLessThan(1);
     await expect(page.getByTestId("hadir-count")).toHaveText(`0 dari ${N - 1} hadir`);
@@ -161,6 +173,57 @@ test.describe("halaman absen (390x844)", () => {
     await expect(row).not.toHaveAttribute("data-mundur", "true");
     await expect(page.getByTestId("hadir-count")).toHaveText(`0 dari ${N} hadir`);
     await expect(status(page)).toContainText("tersimpan", { timeout: 10_000 });
+  });
+
+  test("berpindah pertemuan mengganti daftar dan header", async ({ page }) => {
+    await open(page);
+    await rowBtn(page, NAMES_A[0]).click();
+    await expect(status(page)).toContainText("tersimpan", { timeout: 10_000 });
+    await page.getByLabel("Pertemuan").selectOption({ index: 2 });
+    await expect(page.getByTestId("pertemuan-judul")).toContainText("Pertemuan 3 - Penutup");
+    await expect(page.getByTestId("pertemuan-judul")).toContainText("Bukan hari ini");
+    await expect(page.getByTestId("hadir-count")).toHaveText(`0 dari ${N} hadir`);
+    await expect(rowBtn(page, NAMES_A[0])).toHaveAttribute("aria-pressed", "false");
+    await page.getByLabel("Pertemuan").selectOption({ index: 1 });
+    await expect(page.getByTestId("hadir-count")).toHaveText(`1 dari ${N} hadir`);
+    await expect(rowBtn(page, NAMES_A[0])).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("antrean milik akun lain tidak dikirim, tidak dihitung gagal, dan tetap tersimpan", async ({ page }) => {
+    await open(page);
+    const foreign = { opId: "foreignop00000001", url: `/api/kep/${KEP_A}/absen/${SUB_A_TODAY}/set`, body: { pendaftaranId: "recE2EPEND00000A1", hadir: true, opId: "foreignop00000001" }, owner: "recSomeoneElse0001", kepId: KEP_A };
+    await page.evaluate(
+      (op) =>
+        new Promise<void>((resolve, reject) => {
+          const open = indexedDB.open("keyval-store");
+          open.onupgradeneeded = () => open.result.createObjectStore("keyval");
+          open.onsuccess = () => {
+            const tx = open.result.transaction("keyval", "readwrite");
+            tx.objectStore("keyval").put([op], "kep:queue");
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          };
+        }),
+      foreign,
+    );
+    const sent: string[] = [];
+    page.on("request", (r) => r.method() === "POST" && sent.push(r.url()));
+    await page.reload();
+    await expect(rows(page).first()).toBeVisible();
+    await expect(status(page)).toHaveText("tersimpan");
+    await page.waitForTimeout(500);
+    expect(sent).toEqual([]);
+    const left = await page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          const o = indexedDB.open("keyval-store");
+          o.onsuccess = () => {
+            const g = o.result.transaction("keyval").objectStore("keyval").get("kep:queue");
+            g.onsuccess = () => resolve((g.result as unknown[]).length);
+          };
+        }),
+    );
+    expect(left).toBe(1);
   });
 
   test("pencarian memfilter daftar", async ({ page }) => {
@@ -231,6 +294,7 @@ test.describe("penetapan", () => {
     const first = page.getByTestId("penetapan-row").first();
     const lulus = first.getByRole("button", { name: /^Lulus/ });
     await expect(lulus).toBeEnabled();
+    await expect(first).toContainText("Kehadiran: 0%");
     await lulus.click();
     await expect(lulus).toHaveAttribute("aria-pressed", "true");
     await expect(first.getByTestId("penetapan-status")).toContainText("tersimpan");

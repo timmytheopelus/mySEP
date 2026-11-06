@@ -2,7 +2,11 @@ import type { NextConfig } from "next";
 
 // Content-Security-Policy memakai nonce per-request, jadi diset di src/proxy.ts
 // (lihat src/lib/csp.ts). Header statis lain diset di sini.
+// Build id inlined into the client; versions the service-worker cache (old caches are pruned on activate).
+const BUILD_ID = process.env.BUILD_ID ?? Date.now().toString(36);
+
 const nextConfig: NextConfig = {
+  env: { NEXT_PUBLIC_BUILD_ID: BUILD_ID },
   poweredByHeader: false,
   async headers() {
     return [

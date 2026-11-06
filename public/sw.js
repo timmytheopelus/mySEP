@@ -1,6 +1,6 @@
 // App-shell cache for STATIC assets only. It never touches navigations (authenticated HTML), /api/*,
 // non-GET requests or anything with credentials-bearing responses: those always go to the network.
-const CACHE = "kep-shell-v1";
+const CACHE = "kep-shell-" + (new URL(self.location.href).searchParams.get("v") || "0");
 const STATIC = [/^\/_next\/static\//, /^\/icons\//, /^\/manifest\.webmanifest$/];
 
 self.addEventListener("install", () => self.skipWaiting());

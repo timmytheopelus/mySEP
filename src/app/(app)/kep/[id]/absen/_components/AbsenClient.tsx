@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearDead, deadLetters, enqueue, flush, pendingOps, type DeadOp, type QueuedOp, type SendResult } from "@/lib/offline/queue";
+import Dialog from "./Dialog";
 import HeaderCount from "./HeaderCount";
 import PesertaRow, { type Peserta } from "./PesertaRow";
 import UndoToast, { type Toast } from "./UndoToast";
@@ -24,12 +25,15 @@ const tgl = (d: string) =>
 
 export default function AbsenClient({
   kepId,
+  owner,
   sub,
   pertemuan,
   today,
   initial,
 }: {
   kepId: string;
+  /** opaque account id: queued ops are only sent/shown for their owner */
+  owner: string;
   sub: PertemuanOpt;
   pertemuan: PertemuanOpt[];
   today: string;
@@ -51,6 +55,7 @@ export default function AbsenClient({
   const [authLost, setAuthLost] = useState(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [semua, setSemua] = useState<Semua | null>(null);
+  const [mundurAsk, setMundurAsk] = useState<Peserta | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const inflight = useRef(new Map<string, number>()); // pendaftaranId -> ops not yet answered
   const errors = useRef(new Map<string, string>()); // opId -> server message
@@ -78,9 +83,10 @@ export default function AbsenClient({
   }, [sheetUrl]);
 
   const refreshCounts = useCallback(async () => {
-    setPending((await pendingOps()).length);
-    setDead((await deadLetters()).length);
-  }, []);
+    // An op being enqueued may not be in IndexedDB yet: never show fewer than what is in flight.
+    setPending(Math.max((await pendingOps(owner)).length, totalInflight()));
+    setDead((await deadLetters(owner)).filter((d) => d.kepId === kepId).length);
+  }, [owner, kepId]);
 
   const send = useCallback(
     async (op: QueuedOp): Promise<SendResult> => {
@@ -115,43 +121,47 @@ export default function AbsenClient({
   );
 
   const onDead = useCallback(
-    (list: DeadOp[]) => {
+    async (list: DeadOp[]) => {
       const fresh = list.filter((d) => !handledDead.current.has(d.opId));
+      const later = await pendingOps(owner);
       for (const d of fresh) {
         handledDead.current.add(d.opId);
         const parsed = parseOp(d, kepId, sub.id);
         if (!parsed) continue;
         bump(parsed.pid, -1);
-        // Revert the optimistic change right away, then let the server's sheet decide.
-        if (parsed.kind === "set") patch(parsed.pid, { hadir: !parsed.hadir });
-        else patch(parsed.pid, { mundur: !parsed.batal });
+        // A later queued op for the same row already shows its own (last) intent: leave the display alone.
+        const hasLater = later.some((o) => parseOp(o, kepId, sub.id)?.pid === parsed.pid);
+        if (!hasLater) {
+          if (parsed.kind === "set") patch(parsed.pid, { hadir: !parsed.hadir });
+          else patch(parsed.pid, { mundur: !parsed.batal });
+        }
         const nama = nameOf.current.get(parsed.pid) ?? "peserta";
         setNotice(`Perubahan untuk ${nama} ditolak: ${errors.current.get(d.opId) || `kode ${d.status}`}. Tampilan dikembalikan.`);
       }
       if (fresh.length) void resync();
     },
-    [kepId, sub.id, patch, resync],
+    [owner, kepId, sub.id, patch, resync],
   );
 
   const doFlush = useCallback(async () => {
     for (;;) {
-      const r = await flush(send);
-      if (r.dead.length) onDead(r.dead);
+      const r = await flush(send, { owner });
+      if (r.dead.length) await onDead(r.dead);
       await refreshCounts();
       if (r.pending === 0) {
         if (r.sent > 0 || r.dead.length > 0) void resync();
         return;
       }
       // Progress made but ops remain (enqueued during the run): go again. Otherwise wait for signal/timer.
-      if (r.sent + r.dead.length === 0 || (await pendingOps()).length === 0) return;
+      if (r.sent + r.dead.length === 0 || (await pendingOps(owner)).length === 0) return;
     }
-  }, [send, onDead, refreshCounts, resync]);
+  }, [send, owner, onDead, refreshCounts, resync]);
 
   // Mount: overlay ops that survived a reload, then try to send them.
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const q = await pendingOps();
+      const q = await pendingOps(owner);
       if (!alive) return;
       for (const op of q) {
         const parsed = parseOp(op, kepId, sub.id);
@@ -161,7 +171,7 @@ export default function AbsenClient({
         else patch(parsed.pid, { mundur: !parsed.batal });
       }
       await refreshCounts();
-      const old = (await deadLetters()).length;
+      const old = (await deadLetters(owner)).filter((d) => d.kepId === kepId).length;
       if (old > 0 && alive) setNotice(`${old} perubahan sebelumnya gagal terkirim dan sudah dibatalkan. Periksa daftar hadir.`);
       if (q.length) void doFlush();
     })();
@@ -182,21 +192,23 @@ export default function AbsenClient({
   }, [doFlush]);
 
   useEffect(() => {
-    if (pending === 0) return;
+    if (pending === 0 || authLost) return; // after a 401 wait for the next user action
     const t = setInterval(() => void doFlush(), 5000);
     return () => clearInterval(t);
-  }, [pending, doFlush]);
+  }, [pending, authLost, doFlush]);
 
   const push = useCallback(
     (pid: string, url: string, body: Record<string, unknown>) => {
       const opId = newOpId();
       bump(pid, 1);
       setPending((n) => n + 1);
-      void enqueue({ opId, url, body: { ...body, opId } }).then(() => doFlush());
+      setAuthLost(false);
+      void enqueue({ opId, url, body: { ...body, opId }, owner, kepId }).then(() => doFlush());
     },
-    [doFlush],
+    [doFlush, owner, kepId],
   );
 
+  const closeToast = useCallback(() => setToast(null), []);
   const showToast = (text: string, undo: () => void) => setToast({ key: ++toastKey.current, text, undo });
 
   const commitSet = useCallback(
@@ -222,6 +234,10 @@ export default function AbsenClient({
     showToast(`${p.nama}: ${hadir ? "hadir" : "belum hadir"}`, () => commitSet(p.id, !hadir));
   };
   const onMundur = (p: Peserta, batal: boolean) => {
+    if (!batal) return setMundurAsk(p); // asks first; see the confirm dialog
+    doMundur(p, batal);
+  };
+  const doMundur = (p: Peserta, batal: boolean) => {
     setNotice(null);
     commitMundur(p.id, batal);
     showToast(batal ? `${p.nama}: pengunduran diri dibatalkan` : `${p.nama}: mengundurkan diri`, () => commitMundur(p.id, !batal));
@@ -236,7 +252,9 @@ export default function AbsenClient({
     const opId = (semuaOp.current ??= newOpId());
     setSemua({ phase: "running", updated: 0, total });
     try {
-      for (;;) {
+      let prev = Infinity;
+      for (let i = 0; ; i++) {
+        if (i >= 20) return setSemua({ phase: "error", updated: 0, total, error: "Masih ada peserta yang belum terproses. Coba lagi." });
         const res = await fetch(semuaUrl, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -250,6 +268,8 @@ export default function AbsenClient({
         }
         setSemua({ phase: "running", updated: j.updated ?? 0, total });
         if (j.remaining === 0) break;
+        if (j.remaining >= prev) return setSemua({ phase: "error", updated: j.updated ?? 0, total, error: "Tidak ada kemajuan dari server. Coba lagi." });
+        prev = j.remaining;
       }
       semuaOp.current = null;
       setSemua(null);
@@ -325,7 +345,7 @@ export default function AbsenClient({
             className={styles.linkBtn}
             onClick={() => {
               setNotice(null);
-              void clearDead().then(() => {
+              void clearDead({ owner, kepId }).then(() => {
                 handledDead.current.clear();
                 return refreshCounts();
               });
@@ -349,56 +369,75 @@ export default function AbsenClient({
         </button>
       </div>
 
-      <UndoToast toast={toast} onClose={() => setToast(null)} />
+      <UndoToast toast={toast} onClose={closeToast} />
 
       {semua && (
-        <div className={styles.overlay}>
-          <div
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="semua-judul"
-            aria-describedby="semua-isi"
-            className={styles.dialog}
-            onKeyDown={(e) => e.key === "Escape" && semua.phase !== "running" && setSemua(null)}
-          >
-            <h2 id="semua-judul">Tandai semua hadir?</h2>
-            {semua.phase === "confirm" && (
-              <>
-                <p id="semua-isi">
-                  Semua peserta aktif yang belum hadir ({semua.total} orang) akan ditandai hadir di pertemuan ini. Peserta yang mengundurkan diri tidak ikut.
-                </p>
-                <div className={styles.dialogBtns}>
-                  <button type="button" className={styles.primary} onClick={() => void runSemua(semua.total)}>
-                    Ya, tandai semua
-                  </button>
-                  <button type="button" className={styles.secondary} autoFocus onClick={() => setSemua(null)}>
-                    Batal
-                  </button>
-                </div>
-              </>
-            )}
-            {semua.phase === "running" && (
+        <Dialog labelId="semua-judul" descId="semua-isi" onClose={semua.phase === "running" ? undefined : () => setSemua(null)}>
+          <h2 id="semua-judul">Tandai semua hadir?</h2>
+          {semua.phase === "confirm" && (
+            <>
               <p id="semua-isi">
-                <progress value={semua.updated} max={Math.max(semua.total, 1)} /> <span>{`Memproses… ${semua.updated} dari ${semua.total}`}</span>
+                Semua peserta aktif yang belum hadir ({semua.total} orang) akan ditandai hadir di pertemuan ini. Peserta yang mengundurkan diri tidak ikut.
               </p>
-            )}
-            {semua.phase === "error" && (
-              <>
-                <p id="semua-isi" className={styles.errText}>
-                  {semua.error}
-                </p>
-                <div className={styles.dialogBtns}>
-                  <button type="button" className={styles.primary} onClick={() => void runSemua(semua.total)}>
-                    Coba lagi
-                  </button>
-                  <button type="button" className={styles.secondary} onClick={() => setSemua(null)}>
-                    Tutup
-                  </button>
-                </div>
-              </>
-            )}
+              <div className={styles.dialogBtns}>
+                <button type="button" className={styles.primary} onClick={() => void runSemua(semua.total)}>
+                  Ya, tandai semua
+                </button>
+                <button type="button" className={styles.secondary} data-autofocus onClick={() => setSemua(null)}>
+                  Batal
+                </button>
+              </div>
+            </>
+          )}
+          {semua.phase === "running" && (
+            <p id="semua-isi">
+              <progress value={semua.updated} max={Math.max(semua.total, 1)} /> <span>{`Memproses… ${semua.updated} dari ${semua.total}`}</span>
+            </p>
+          )}
+          {semua.phase === "error" && (
+            <>
+              <p id="semua-isi" className={styles.errText}>
+                {semua.error}
+              </p>
+              <div className={styles.dialogBtns}>
+                <button type="button" className={styles.primary} onClick={() => void runSemua(semua.total)}>
+                  Coba lagi
+                </button>
+                <button type="button" className={styles.secondary} onClick={() => setSemua(null)}>
+                  Tutup
+                </button>
+              </div>
+            </>
+          )}
+        </Dialog>
+      )}
+
+      {mundurAsk && (
+        <Dialog
+          labelId="mundur-judul"
+          descId="mundur-isi"
+          onClose={() => setMundurAsk(null)}
+          returnFocus={() => [...document.querySelectorAll<HTMLElement>("[aria-label]")].find((e) => e.getAttribute("aria-label") === `Menu untuk ${mundurAsk.nama}`) ?? null}
+        >
+          <h2 id="mundur-judul">Mengundurkan diri?</h2>
+          <p id="mundur-isi">{mundurAsk.nama} akan ditandai mengundurkan diri dan tidak dihitung lagi dalam daftar hadir. Anda masih bisa membatalkannya.</p>
+          <div className={styles.dialogBtns}>
+            <button
+              type="button"
+              className={styles.primary}
+              onClick={() => {
+                const p = mundurAsk;
+                setMundurAsk(null);
+                doMundur(p, false);
+              }}
+            >
+              Ya, mundurkan
+            </button>
+            <button type="button" className={styles.secondary} data-autofocus onClick={() => setMundurAsk(null)}>
+              Batal
+            </button>
           </div>
-        </div>
+        </Dialog>
       )}
     </main>
   );
