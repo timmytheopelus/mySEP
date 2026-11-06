@@ -91,11 +91,11 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
   try {
     // ---- reads and duplicate detection (no writes yet) ----
     const [events, keps, orgs, audits, subs] = await Promise.all([
-      listRecords(T.events, { fields: [F.events.namaAcara, F.events.kelompokAcara], filterByFormula: `{${F.events.namaAcara}} = ${q(nama)}` }),
-      listRecords(T.eventKep, { fields: [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan, F.eventKep.angkatan] }),
+      listRecords(T.events, { fields: [F.events.namaAcara, F.events.kelompokAcara, F.events.tanggalAcara], filterByFormula: `{${F.events.namaAcara}} = ${q(nama)}` }),
+      listRecords(T.eventKep, { fields: [F.eventKep.events, F.eventKep.penyelenggara, F.eventKep.statusPersetujuan, F.eventKep.angkatan, F.eventKep.tanggalMulai] }),
       listRecords(T.penyelenggaraKep, { fields: [F.penyelenggaraKep.paroki] }),
       listRecords(T.auditKep, { fields: [F.auditKep.aksi, F.auditKep.targetId, F.auditKep.sesudah], filterByFormula: `OR({${F.auditKep.aksi}} = "create_kep_mulai", {${F.auditKep.aksi}} = "create_kep")` }),
-      listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.urutan] }),
+      listRecords(T.subEvent, { fields: [F.subEvent.acara, F.subEvent.urutan, F.subEvent.tanggal] }),
     ]);
     const auditOf = (aksi: string, target: string) =>
       audits.some((a) => a.fields[F.auditKep.aksi] === aksi && a.fields[F.auditKep.targetId] === target);
@@ -113,9 +113,16 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
     if (clash) throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
     if (kep && !ids(kep.fields[F.eventKep.penyelenggara]).some((o) => ownOrgIds.has(o)))
       throw new HttpError(409, "KEP dengan paroki dan angkatan ini sudah ada");
+    // Date consistency. Once any data row exists, persisted data is authoritative (EventKEP Tanggal Mulai, else
+    // Events Tanggal Acara, else the first SubEvent); markers only count while nothing but markers exist.
+    let freshMarker = false;
     if (event) {
-      // Never mix schedules: a resume must use the start date of the earlier attempt.
-      const earlier = markers
+      const day = (v: unknown) => (typeof v === "string" && v ? v.slice(0, 10) : undefined);
+      const firstSub = subs.find(
+        (x) => ids(x.fields[F.subEvent.acara]).includes(event.id) && x.fields[F.subEvent.urutan] === 1,
+      );
+      const persisted = day(kep?.fields[F.eventKep.tanggalMulai]) ?? day(event.fields[F.events.tanggalAcara]) ?? day(firstSub?.fields[F.subEvent.tanggal]);
+      const fromMarker = markers
         .map((m) => {
           try {
             return (JSON.parse(String(m.fields[F.auditKep.sesudah] ?? "")) as { tanggalMulai?: string }).tanggalMulai;
@@ -123,9 +130,24 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
             return undefined;
           }
         })
-        .find((d) => typeof d === "string");
+        .filter((d): d is string => typeof d === "string")
+        .at(-1);
+      const earlier = persisted ?? fromMarker;
       if (earlier && earlier !== tanggalMulai)
         throw new HttpError(409, `Pengajuan KEP ini sudah dimulai dengan tanggal mulai ${earlier}. Kirim ulang dengan tanggal yang sama untuk melanjutkan.`);
+    } else {
+      // Only markers exist: the latest marker wins, so a changed date needs a fresh marker.
+      const last = markers
+        .map((m) => {
+          try {
+            return (JSON.parse(String(m.fields[F.auditKep.sesudah] ?? "")) as { tanggalMulai?: string }).tanggalMulai;
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((d): d is string => typeof d === "string")
+        .at(-1);
+      freshMarker = started && last !== tanggalMulai;
     }
     const existingSubs = new Map<number, string>();
     if (event)
@@ -142,7 +164,7 @@ export async function createKep(actor: Session, input: CreateKepInput, opts: { n
     }
 
     // ---- writes ----
-    if (!started) {
+    if (!started || freshMarker) {
       await logAudit({ actorEmail: actor.email, action: "create_kep_mulai", targetId: key, after: { nama, tanggalMulai } });
     }
     wrote = true;
