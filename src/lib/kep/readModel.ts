@@ -75,14 +75,14 @@ export const UNMAPPED = "Belum terpetakan";
 const NOT_COURSE = /pembekalan|bina\s*lanjut/i;
 const COURSE_NAME = /^\s*KEP\s+PAROKI/i;
 
-function normPhone(v: unknown): string | null {
+export function normPhone(v: unknown): string | null {
   let d = str(v).replace(/\D+/g, "");
   if (d.startsWith("00")) d = d.slice(2);
   if (d.startsWith("0")) d = `62${d.slice(1)}`;
   else if (d.startsWith("8")) d = `62${d}`;
   return d.length >= 9 ? d : null;
 }
-function normEmail(v: unknown): string | null {
+export function normEmail(v: unknown): string | null {
   const e = str(v).toLowerCase();
   return /^[^\s@]+@[^\s@]+$/.test(e) ? e : null;
 }

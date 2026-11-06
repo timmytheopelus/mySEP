@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomBytes } from "node:crypto";
-import { F, T, TEAM_UMAT_CREATED, PENDAFTARAN_CREATED, EVENT_ID_FIELD } from "@/lib/airtable/schema";
+import { F, T, PENDAFTARAN_CREATED, EVENT_ID_FIELD } from "@/lib/airtable/schema";
 import { fakeClientModule, resetStore, seedAccount, store } from "../helpers/fake-airtable";
 
 vi.mock("@/lib/airtable/client", () => fakeClientModule());
@@ -311,8 +311,8 @@ describe("registerPeserta", () => {
       "fldqB6h9rzzC5VhKI": true,
     });
     await registerPeserta(EV, PesertaInput.parse(body));
-    const allowedTeam = new Set(Object.values(U));
-    const allowedPend = new Set([P.event, P.teamUmat, P.kategoriKepesertaan, P.statusPendaftaran, P.pendukungDoa, P.kontakDarurat, P.riwayatPenyakit, P.riwayatAlergi, P.obatRutin]);
+    const allowedTeam = new Set<string>(Object.values(U));
+    const allowedPend = new Set<string>([P.event, P.teamUmat, P.kategoriKepesertaan, P.statusPendaftaran, P.pendukungDoa, P.kontakDarurat, P.riwayatPenyakit, P.riwayatAlergi, P.obatRutin]);
     for (const k of Object.keys(persons()[0].fields)) expect(allowedTeam.has(k)).toBe(true);
     for (const k of Object.keys(pendaftaran()[0].fields)) expect(allowedPend.has(k)).toBe(true);
     expect(persons()[0].fields).not.toHaveProperty("fldAkafSwLI9ids0d");

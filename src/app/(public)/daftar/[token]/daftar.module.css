@@ -1,0 +1,14 @@
+.main { max-width: 32rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; font-family: system-ui, sans-serif; }
+.kep { margin: 0 0 1rem; color: #444; overflow-wrap: anywhere; }
+.form { display: flex; flex-direction: column; gap: 1rem; }
+.fieldset { border: 1px solid #ccc; border-radius: 0.5rem; padding: 0.75rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.9rem; margin: 0; min-width: 0; }
+.legend { font-weight: 700; padding: 0 0.35rem; }
+.label { display: flex; flex-direction: column; gap: 0.35rem; font-weight: 600; }
+.input, .select, .textarea { min-height: 2.75rem; padding: 0.5rem 0.75rem; font-size: 1rem; font-weight: 400; width: 100%; box-sizing: border-box; }
+.textarea { min-height: 5.5rem; }
+.hint { font-weight: 400; color: #555; font-size: 0.9rem; }
+.fieldError { font-weight: 400; color: #b00020; font-size: 0.9rem; }
+.privacy { background: #f4f6fa; border-radius: 0.5rem; padding: 0.75rem 1rem; font-size: 0.95rem; margin: 0; }
+.button { min-height: 2.75rem; min-width: 2.75rem; padding: 0 1.25rem; font-size: 1rem; cursor: pointer; }
+.error { color: #b00020; }
+.ok { color: #1b5e20; }

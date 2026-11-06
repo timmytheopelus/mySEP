@@ -34,6 +34,12 @@ export const PENGAJAR_READ = {
   subEvent: "fldvKXMt3yunX41DJ", // link to SubEvent (inverse of SubEvent.Pengajar)
 } as const;
 
+// createdTime fields (read only, outside F so they never enter a write allowlist). Used to pick a deterministic
+// winner when two concurrent registrations raced. IDs from the live field map (TeamUmat "Created",
+// Pendaftaran Events "CreatedTimeAuto").
+export const TEAM_UMAT_CREATED = "fldRztRSisBK7yzng";
+export const PENDAFTARAN_CREATED = "fld0R2DJqFnFZU2sj";
+
 export const SEL = {
   kelompokAcaraKep: "sel89ZKeY5BWQgaTL",
 } as const;
@@ -183,3 +189,32 @@ export const restrictedFor = (tableId: string, role: string): Set<string> =>
 /** Field filter for request-derived data: restricted fields survive only for SEP. */
 export const pickAllowedForRole = (tableId: string, role: string, fields: Record<string, unknown>) =>
   pickAllowed(tableId, fields, restrictedFor(tableId, role));
+
+/**
+ * Public / manual peserta registration may write ONLY these fields. Health data and the emergency contact live on
+ * Pendaftaran Events (per registration); TeamUmat gets personal fields only. jabatan/BPK/admin fields are absent
+ * on purpose, whatever the request body contains.
+ */
+export const PUBLIC_REG_ALLOWED: Record<string, Set<string>> = {
+  [T.teamUmat]: new Set<string>(Object.values(F.teamUmat)),
+  [T.pendaftaranEvents]: new Set<string>([
+    F.pendaftaranEvents.event,
+    F.pendaftaranEvents.teamUmat,
+    F.pendaftaranEvents.kategoriKepesertaan,
+    F.pendaftaranEvents.statusPendaftaran,
+    F.pendaftaranEvents.pendukungDoa,
+    F.pendaftaranEvents.kontakDarurat,
+    F.pendaftaranEvents.riwayatPenyakit,
+    F.pendaftaranEvents.riwayatAlergi,
+    F.pendaftaranEvents.obatRutin,
+  ]),
+};
+
+/** pickAllowed narrowed to the public-registration allowlist (and never any restricted field). */
+export function pickPublicRegistration(tableId: string, fields: Record<string, unknown>): Record<string, unknown> {
+  const allow = PUBLIC_REG_ALLOWED[tableId];
+  const out: Record<string, unknown> = {};
+  if (!allow) return out;
+  for (const [k, v] of Object.entries(pickAllowed(tableId, fields))) if (allow.has(k)) out[k] = v;
+  return out;
+}
