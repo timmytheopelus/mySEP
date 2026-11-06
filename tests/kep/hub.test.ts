@@ -74,7 +74,7 @@ beforeEach(async () => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("getKepHub", () => {
-  it("PIC: name, angkatan, status, dates, stats and peserta (names + status only)", async () => {
+  it("PIC: name, angkatan, status, dates, stats and peserta (names, status and an incomplete flag only)", async () => {
     const h = await getKepHub(pic, KEP);
     expect(h).toMatchObject({ id: KEP, nama: "KEP PAROKI A Angkatan 3", angkatan: 3, status: "Disetujui", kelola: true });
     expect(h.tanggalMulai).toBe(wib(-8));
@@ -82,11 +82,11 @@ describe("getKepHub", () => {
     // Batal and Panitia are not peserta. Aktif = not mundur, not decided.
     expect(h.statistik).toEqual({ aktif: 2, mundur: 1, lulus: 1, tidakLulus: 1, total: 5 });
     expect(h.peserta).toEqual([
-      { id: "recPEND0000000001", nama: "Agnes", status: "Aktif" },
-      { id: "recPEND0000000002", nama: "Bernadus", status: "Aktif" },
-      { id: "recPEND0000000003", nama: "Cecilia", status: "Mundur" },
-      { id: "recPEND0000000004", nama: "Dominikus", status: "Lulus" },
-      { id: "recPEND0000000005", nama: "Elisabeth", status: "Tidak lulus" },
+      { id: "recPEND0000000001", nama: "Agnes", status: "Aktif", belumLengkap: true },
+      { id: "recPEND0000000002", nama: "Bernadus", status: "Aktif", belumLengkap: true },
+      { id: "recPEND0000000003", nama: "Cecilia", status: "Mundur", belumLengkap: true },
+      { id: "recPEND0000000004", nama: "Dominikus", status: "Lulus", belumLengkap: true },
+      { id: "recPEND0000000005", nama: "Elisabeth", status: "Tidak lulus", belumLengkap: true },
     ]);
   });
   it("lists pertemuan with dates, hadir counts among non-mundur peserta, and flags today", async () => {
@@ -105,7 +105,9 @@ describe("getKepHub", () => {
     const json = JSON.stringify(h);
     for (const leak of [SECRET_HEALTH, "RAHASIA", "0812"]) expect(json).not.toContain(leak);
     const asked = vi.mocked(listRecords).mock.calls.flatMap((c) => (c[1] as { fields?: string[] } | undefined)?.fields ?? []);
-    for (const f of [P.riwayatPenyakit, P.riwayatAlergi, P.obatRutin, P.kontakDarurat, P.pendukungDoa, F.teamUmat.noWhatsapp, F.teamUmat.email]) expect(asked).not.toContain(f);
+    for (const f of [P.riwayatPenyakit, P.riwayatAlergi, P.obatRutin, P.kontakDarurat, P.pendukungDoa, F.teamUmat.noWhatsapp]) expect(asked).not.toContain(f);
+    // the e-mail is read only to know whether it exists ("Data belum lengkap"); its value never leaves the read model
+    expect(json).not.toMatch(/@/);
   });
   it("SEP: read-only aggregates, no peserta list, no management links", async () => {
     const h = await getKepHub(sep, KEP);

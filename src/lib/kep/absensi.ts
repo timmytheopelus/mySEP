@@ -163,19 +163,27 @@ async function pesertaRows(actor: Session, ctx: Ctx, fresh = false): Promise<AtR
   return rows.filter(isCountable);
 }
 
-/** Names by RECORD_ID() filter, at most NAME_CHUNK ids per request (no full table scan). */
-export async function namesOf(teamIds: string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+export type PersonBasics = { nama: string; /** email and birth date both on file (walk-ins start without them) */ lengkap: boolean };
+
+/** Name and completeness flag by RECORD_ID() filter, at most NAME_CHUNK ids per request (no full table scan). Email and birth date are never returned, only whether they exist. */
+export async function peopleOf(teamIds: string[]): Promise<Map<string, PersonBasics>> {
+  const out = new Map<string, PersonBasics>();
   const want = [...new Set(teamIds.filter((i) => REC_ID.test(i)))];
+  const U = F.teamUmat;
   for (let i = 0; i < want.length; i += NAME_CHUNK) {
     const chunk = want.slice(i, i + NAME_CHUNK);
     const rows = await listRecords(T.teamUmat, {
-      fields: [F.teamUmat.namaLengkap],
+      fields: [U.namaLengkap, U.email, U.tanggalLahir],
       filterByFormula: `OR(${chunk.map((id) => `RECORD_ID()="${id}"`).join(",")})`,
     });
-    for (const r of rows) out.set(r.id, str(r.fields[F.teamUmat.namaLengkap]).trim());
+    for (const r of rows) out.set(r.id, { nama: str(r.fields[U.namaLengkap]).trim(), lengkap: str(r.fields[U.email]).trim() !== "" && str(r.fields[U.tanggalLahir]).trim() !== "" });
   }
   return out;
+}
+
+/** Names by RECORD_ID() filter (see peopleOf). */
+export async function namesOf(teamIds: string[]): Promise<Map<string, string>> {
+  return new Map([...(await peopleOf(teamIds))].map(([id, p]) => [id, p.nama]));
 }
 
 export async function getAbsenSheet(actor: Session, eventKepId: string, subEventId: string): Promise<AbsenSheet> {

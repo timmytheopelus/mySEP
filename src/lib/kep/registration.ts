@@ -177,28 +177,31 @@ const Doa = z.object({
   kontak: line("Kontak pendukung doa", 3, 60),
 });
 
+const waField = z
+  .string({ error: "Nomor WhatsApp wajib diisi" })
+  .max(40, { error: "Nomor WhatsApp tidak valid" })
+  .transform((v, ctx) => {
+    const n = normalizeWa(v);
+    if (!n) {
+      ctx.addIssue({ code: "custom", message: "Nomor WhatsApp tidak valid" });
+      return z.NEVER;
+    }
+    return n;
+  });
+const emailField = z
+  .string({ error: "Email wajib diisi" })
+  .trim()
+  .toLowerCase()
+  .max(254, { error: "Email terlalu panjang" })
+  .pipe(z.email({ error: "Email tidak valid" }));
+
 export const PesertaInput = z.object({
   namaLengkap: nameField("Nama lengkap", 2),
   namaBaptis: z.preprocess((v) => (v === "" ? undefined : v), nameField("Nama baptis", 1).optional()),
   jenisKelamin: z.enum(["Pria", "Wanita"], { error: "Pilih jenis kelamin" }),
   tanggalLahir: z.string({ error: "Tanggal lahir wajib diisi" }).refine(plausibleBirth, { error: "Tanggal lahir tidak valid" }),
-  wa: z
-    .string({ error: "Nomor WhatsApp wajib diisi" })
-    .max(40, { error: "Nomor WhatsApp tidak valid" })
-    .transform((v, ctx) => {
-      const n = normalizeWa(v);
-      if (!n) {
-        ctx.addIssue({ code: "custom", message: "Nomor WhatsApp tidak valid" });
-        return z.NEVER;
-      }
-      return n;
-    }),
-  email: z
-    .string({ error: "Email wajib diisi" })
-    .trim()
-    .toLowerCase()
-    .max(254, { error: "Email terlalu panjang" })
-    .pipe(z.email({ error: "Email tidak valid" })),
+  wa: waField,
+  email: emailField,
   alamat: line("Alamat", 5, 300),
   parokiAsalId: z.string({ error: "Pilih paroki asal" }).regex(REC_ID, { error: "Pilih paroki asal" }),
   statusPernikahan: z.enum(["Single", "Menikah", "Tidak Menikah"], { error: "Pilih status pernikahan" }),
@@ -213,8 +216,37 @@ export const PesertaInput = z.object({
   if (hasHealth && v.persetujuanKesehatan !== true)
     ctx.addIssue({ code: "custom", path: ["persetujuanKesehatan"], message: "Centang persetujuan penggunaan data kesehatan untuk melanjutkan" });
 });
-const hasHealthData = (v: PesertaInput) => [v.riwayatPenyakit, v.riwayatAlergi, v.obatRutin].some((x) => !!x);
+const hasHealthData = (v: RegInput) => [v.riwayatPenyakit, v.riwayatAlergi, v.obatRutin].some((x) => !!x);
 export type PesertaInput = z.output<typeof PesertaInput>;
+
+/**
+ * Walk-in at the Absen screen (spec 8b.8): name and WhatsApp only, email optional. No health fields, so there is
+ * no consent to record; the rest of the data is completed later (the hub shows "Data belum lengkap").
+ */
+export const WalkInInput = z.object({
+  namaLengkap: nameField("Nama lengkap", 2),
+  wa: waField,
+  email: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), emailField.optional()),
+});
+export type WalkInInput = z.output<typeof WalkInInput>;
+
+/** What registration needs: the full public form fits it, and so does a walk-in (everything but name and WA optional). */
+type RegInput = {
+  namaLengkap: string;
+  wa: string;
+  email?: string;
+  namaBaptis?: string;
+  jenisKelamin?: string;
+  tanggalLahir?: string;
+  alamat?: string;
+  parokiAsalId?: string;
+  statusPernikahan?: string;
+  kontakDarurat?: string;
+  pendukungDoa?: { nama: string; kontak: string }[];
+  riwayatPenyakit?: string;
+  riwayatAlergi?: string;
+  obatRutin?: string;
+};
 
 // ---------------------------------------------------------------------------------------------
 // Errors
@@ -292,14 +324,16 @@ const byAge = (field: string) => (a: AtRecord, b: AtRecord) => createdOf(a, fiel
 
 const WA_CLEAN = `SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE({${U.noWhatsapp}}," ",""),"-",""),"+",""),"(",""),")",""),".","")`;
 
-async function findMatches(input: PesertaInput): Promise<{ byWa: AtRecord[]; byEmail: AtRecord[] }> {
+async function findMatches(input: RegInput): Promise<{ byWa: AtRecord[]; byEmail: AtRecord[] }> {
   // The formula only narrows the read; the exact match is re-checked in code with the shared normalization.
-  const filterByFormula = `OR(LOWER(TRIM({${U.email}}))=${q(input.email)},FIND(${q(input.wa.slice(-9))},${WA_CLEAN})>0)`;
+  // (no email submitted, e.g. a walk-in: match on WhatsApp only - an empty address must never match every blank email)
+  const byWaFormula = `FIND(${q(input.wa.slice(-9))},${WA_CLEAN})>0`;
+  const filterByFormula = input.email ? `OR(LOWER(TRIM({${U.email}}))=${q(input.email)},${byWaFormula})` : byWaFormula;
   const rows = await listRecords(T.teamUmat, { fields: PERSON_FIELDS, filterByFormula });
   const sorted = rows.filter((r) => !tombstone(r)).sort(byAge(TEAM_UMAT_CREATED));
   return {
     byWa: sorted.filter((r) => storedWa(r.fields[U.noWhatsapp]) === input.wa),
-    byEmail: sorted.filter((r) => normEmail(r.fields[U.email]) === input.email),
+    byEmail: input.email ? sorted.filter((r) => normEmail(r.fields[U.email]) === input.email) : [],
   };
 }
 
@@ -327,7 +361,7 @@ async function softAudit(ctx: PersonCtx, entry: Parameters<typeof logAudit>[0]) 
   }
 }
 
-async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<ResolvedPerson> {
+async function resolvePerson(input: RegInput, ctx: PersonCtx = {}): Promise<ResolvedPerson> {
   const { byWa, byEmail } = await findMatches(input);
   const common = byWa.find((r) => byEmail.some((e) => e.id === r.id));
   const chosen = common ?? byWa[0] ?? byEmail[0];
@@ -345,7 +379,7 @@ async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<
   if (chosen) {
     // An existing person is NEVER modified (no overwrite, no blank fill). Only the registration row is created.
     const mailTo = onFileEmail(chosen);
-    if (mailTo !== input.email)
+    if (input.email && mailTo !== input.email)
       await softAudit(ctx, {
         ...actor,
         action: "registrasi_untuk_orang_terdaftar",
@@ -358,13 +392,13 @@ async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<
   const fields = pickPublicRegistration(T.teamUmat, {
     [U.namaLengkap]: input.namaLengkap,
     ...(input.namaBaptis ? { [U.namaBaptis]: input.namaBaptis } : {}),
-    [U.email]: input.email,
+    ...(input.email ? { [U.email]: input.email } : {}),
     [U.noWhatsapp]: input.wa,
-    [U.tanggalLahir]: input.tanggalLahir,
-    [U.alamatTinggal]: input.alamat,
-    [U.jenisKelamin]: input.jenisKelamin,
-    [U.statusPernikahan]: input.statusPernikahan,
-    [U.paroki]: [input.parokiAsalId],
+    ...(input.tanggalLahir ? { [U.tanggalLahir]: input.tanggalLahir } : {}),
+    ...(input.alamat ? { [U.alamatTinggal]: input.alamat } : {}),
+    ...(input.jenisKelamin ? { [U.jenisKelamin]: input.jenisKelamin } : {}),
+    ...(input.statusPernikahan ? { [U.statusPernikahan]: input.statusPernikahan } : {}),
+    ...(input.parokiAsalId ? { [U.paroki]: [input.parokiAsalId] } : {}),
   });
   const [made] = await createRecords(T.teamUmat, [fields]);
   // Another instance may have created the same person at the same moment: the oldest row wins (nothing is deleted).
@@ -375,10 +409,10 @@ async function resolvePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<
     await softAudit(ctx, { ...actor, action: "registrasi_person_ganda", targetId: ctx.eventId ?? "registrasi", after: { dipakai: winner.id, yatim: made.id } });
     return { personId: winner.id, created: false, mailTo: onFileEmail(winner), mailName: safeName(winner.fields[U.namaLengkap]) };
   }
-  return { personId: made.id, created: true, mailTo: input.email, mailName: input.namaLengkap };
+  return { personId: made.id, created: true, mailTo: input.email ?? null, mailName: input.namaLengkap };
 }
 
-export async function findOrCreatePerson(input: PesertaInput, ctx: PersonCtx = {}): Promise<{ personId: string; created: boolean }> {
+export async function findOrCreatePerson(input: RegInput, ctx: PersonCtx = {}): Promise<{ personId: string; created: boolean }> {
   const r = await resolvePerson(input, ctx);
   if (r.created) invalidateKepCache(T.teamUmat);
   return { personId: r.personId, created: r.created };
@@ -428,12 +462,26 @@ export async function registerPeserta(
   rawInput: unknown,
   opts: { actorEmail?: string; defer?: (fn: () => Promise<unknown>) => void } = {},
 ): Promise<RegisterResult> {
-  const input = PesertaInput.parse(rawInput);
+  return registerCore(eventId, PesertaInput.parse(rawInput), opts);
+}
+
+/** Walk-in registration (name + WhatsApp, email optional) by a signed-in PIC / Admin: same dedupe, never edits an existing person. */
+export async function registerWalkIn(eventId: string, rawInput: unknown, opts: { actorEmail: string }): Promise<RegisterResult> {
+  return registerCore(eventId, WalkInInput.parse(rawInput), opts);
+}
+
+async function registerCore(
+  eventId: string,
+  input: RegInput,
+  opts: { actorEmail?: string; defer?: (fn: () => Promise<unknown>) => void },
+): Promise<RegisterResult> {
   const kep = await resolveOpenKep(eventId);
   const out = await withLock(kep.eventId, async () => {
     const kepAgain = await resolveOpenKep(eventId); // the status may have changed while we waited for the lock
-    const parokis = await cachedList(T.paroki, [F.paroki.nama]);
-    if (!parokis.some((p) => p.id === input.parokiAsalId)) throw new RegistrationInputError("Paroki asal tidak valid");
+    if (input.parokiAsalId !== undefined) {
+      const parokis = await cachedList(T.paroki, [F.paroki.nama]);
+      if (!parokis.some((p) => p.id === input.parokiAsalId)) throw new RegistrationInputError("Paroki asal tidak valid");
+    }
     const person = await resolvePerson(input, { eventId: kepAgain.eventId, actorEmail: opts.actorEmail, defer: opts.defer });
 
     const existing = await activeRows(kepAgain, person.personId);
@@ -452,8 +500,8 @@ export async function registerPeserta(
       [P.teamUmat]: [person.personId],
       [P.kategoriKepesertaan]: "Peserta",
       [P.statusPendaftaran]: "Daftar",
-      [P.pendukungDoa]: input.pendukungDoa.map((d) => `${d.nama} (${d.kontak})`).join("; "),
-      [P.kontakDarurat]: input.kontakDarurat,
+      ...(input.pendukungDoa ? { [P.pendukungDoa]: input.pendukungDoa.map((d) => `${d.nama} (${d.kontak})`).join("; ") } : {}),
+      ...(input.kontakDarurat ? { [P.kontakDarurat]: input.kontakDarurat } : {}),
       ...(input.riwayatPenyakit ? { [P.riwayatPenyakit]: input.riwayatPenyakit } : {}),
       ...(input.riwayatAlergi ? { [P.riwayatAlergi]: input.riwayatAlergi } : {}),
       ...(input.obatRutin ? { [P.obatRutin]: input.obatRutin } : {}),

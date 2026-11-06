@@ -183,12 +183,20 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
           <section className={styles.card} aria-labelledby="h-peserta">
             <h2 id="h-peserta" className={styles.h2}>Daftar peserta ({hub.peserta?.length ?? 0})</h2>
+            {hub.belumLengkap > 0 ? (
+              <p className={styles.hint} data-testid="belum-lengkap-jumlah">
+                {hub.belumLengkap} peserta masih perlu dilengkapi datanya (email atau tanggal lahir belum ada), misalnya peserta yang datang langsung.
+              </p>
+            ) : null}
             {hub.peserta && hub.peserta.length > 0 ? (
               <ul className={styles.list}>
                 {hub.peserta.map((p) => (
                   <li key={p.id} className={`${styles.peserta} ${p.status === "Aktif" ? "" : styles.pesertaMuted}`} data-testid="peserta-item">
                     <span>{p.nama}</span>
-                    <span className={styles.badge}>{p.status}</span>
+                    <span>
+                      {p.belumLengkap && p.status !== "Mundur" ? <span className={styles.badgeWarn} data-testid="data-belum-lengkap">Data belum lengkap</span> : null}{" "}
+                      <span className={styles.badge}>{p.status}</span>
+                    </span>
                   </li>
                 ))}
               </ul>

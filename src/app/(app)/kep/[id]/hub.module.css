@@ -3,6 +3,7 @@
 .title { margin: 0; font-size: 1.4rem; overflow-wrap: anywhere; }
 .meta { margin: 0; color: #444; }
 .badge { display: inline-block; font-size: 0.9rem; font-weight: 700; border: 1px solid #444; border-radius: 999px; padding: 0.1rem 0.6rem; }
+.badgeWarn { display: inline-block; font-size: 0.85rem; font-weight: 700; color: #5c3200; background: #fff4e0; border: 1px solid #8a4b00; border-radius: 999px; padding: 0.1rem 0.6rem; }
 .card { border: 1px solid #ccc; border-radius: 0.5rem; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
 .h2 { margin: 0; font-size: 1.1rem; }
 .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; margin: 0; }

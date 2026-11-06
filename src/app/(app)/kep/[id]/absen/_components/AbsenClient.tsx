@@ -12,6 +12,7 @@ import styles from "../absen.module.css";
 export type PertemuanOpt = { id: string; agenda: string; tanggal: string };
 type Sheet = { peserta: Peserta[]; hadirCount: number; aktifCount: number };
 type Semua = { phase: "confirm" | "running" | "error"; updated: number; total: number; error?: string };
+type WalkIn = { busy: boolean; error?: string; fields: Record<string, string> };
 
 const newOpId = () => {
   try {
@@ -42,6 +43,7 @@ export default function AbsenClient({
   const router = useRouter();
   const setUrl = `/api/kep/${kepId}/absen/${sub.id}/set`;
   const semuaUrl = `/api/kep/${kepId}/absen/${sub.id}/semua`;
+  const tambahUrl = `/api/kep/${kepId}/absen/${sub.id}/tambah`;
   const sheetUrl = `/api/kep/${kepId}/absen/${sub.id}`;
   const mundurUrl = (pid: string) => `/api/kep/${kepId}/peserta/${pid}/mundur`;
 
@@ -56,6 +58,8 @@ export default function AbsenClient({
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [semua, setSemua] = useState<Semua | null>(null);
   const [mundurAsk, setMundurAsk] = useState<Peserta | null>(null);
+  const [walkin, setWalkin] = useState<WalkIn | null>(null);
+  const walkinOp = useRef<string | null>(null); // one opId per unchanged form: a retry after a timeout is idempotent
   const listRef = useRef<HTMLUListElement>(null);
   const inflight = useRef(new Map<string, number>()); // pendaftaranId -> ops not yet answered
   const errors = useRef(new Map<string, string>()); // opId -> server message
@@ -279,6 +283,43 @@ export default function AbsenClient({
     }
   }
 
+  /** Walk-in (spec 8b.8). Online only: it creates a person, so it is never queued for later. */
+  async function submitWalkin(form: HTMLFormElement) {
+    const fd = new FormData(form);
+    const v = (k: string) => String(fd.get(k) ?? "").trim();
+    const fields = { namaLengkap: v("namaLengkap"), wa: v("wa"), email: v("email") };
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setWalkin({ busy: false, fields, error: "Tidak ada sinyal. Menambah peserta baru memerlukan koneksi; coba lagi saat tersambung. Peserta yang sudah ada bisa tetap diabsen." });
+      return;
+    }
+    const opId = (walkinOp.current ??= newOpId());
+    setWalkin({ busy: true, fields });
+    try {
+      const res = await fetch(tambahUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ ...fields, opId }),
+      });
+      const j = (await res.json().catch(() => null)) as { pendaftaranId?: string; status?: string; error?: string; fields?: Record<string, string> } | null;
+      if (res.ok && typeof j?.pendaftaranId === "string") {
+        const pid = j.pendaftaranId;
+        walkinOp.current = null;
+        setWalkin(null);
+        setNotice(null);
+        setPeserta((l) => (l.some((p) => p.id === pid) ? l.map((p) => (p.id === pid ? { ...p, hadir: true } : p)) : [...l, { id: pid, nama: fields.namaLengkap, hadir: true, mundur: false }].sort((a, b) => a.nama.localeCompare(b.nama, "id", { sensitivity: "base" }))));
+        showToast(`${fields.namaLengkap}: ${j.status === "already_registered" ? "sudah terdaftar, ditandai hadir" : "ditambahkan dan hadir"}`, () => commitSet(pid, false));
+        void resync();
+        return;
+      }
+      if (res.status === 401) setAuthLost(true);
+      const detail = j?.fields ? Object.values(j.fields).join(" ") : "";
+      setWalkin({ busy: false, fields, error: res.status === 401 ? "Sesi berakhir. Masuk lagi, lalu coba lagi." : [j?.error, detail].filter(Boolean).join(" ") || "Gagal menambah peserta. Coba lagi." });
+    } catch {
+      setWalkin({ busy: false, fields, error: "Tidak ada sinyal. Isian Anda masih di layar; coba lagi saat tersambung." });
+    }
+  }
+
   const onListKey = (e: React.KeyboardEvent) => {
     const t = e.target as HTMLElement;
     if (!t.hasAttribute("data-row-main")) return;
@@ -364,6 +405,9 @@ export default function AbsenClient({
       {shown.length === 0 && <p className={styles.empty}>{q ? "Tidak ada peserta yang cocok." : "Tidak ada peserta."}</p>}
 
       <div className={styles.foot}>
+        <button type="button" className={styles.add} onClick={() => setWalkin({ busy: false, fields: { namaLengkap: "", wa: "", email: "" } })}>
+          + Tambah peserta
+        </button>
         <button type="button" className={styles.all} disabled={aktif.every((p) => p.hadir) || !!semua} onClick={() => setSemua({ phase: "confirm", updated: 0, total: aktif.filter((p) => !p.hadir).length })}>
           Tandai semua hadir
         </button>
@@ -409,6 +453,45 @@ export default function AbsenClient({
               </div>
             </>
           )}
+        </Dialog>
+      )}
+
+      {walkin && (
+        <Dialog labelId="walkin-judul" descId="walkin-isi" onClose={walkin.busy ? undefined : () => setWalkin(null)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submitWalkin(e.currentTarget);
+            }}
+          >
+            <h2 id="walkin-judul">Tambah peserta</h2>
+            <p id="walkin-isi">Peserta yang datang langsung: isi nama dan nomor WhatsApp. Mereka terdaftar dan langsung ditandai hadir di pertemuan ini. Data lainnya dilengkapi kemudian.</p>
+            <label className={styles.formField}>
+              Nama lengkap
+              <input name="namaLengkap" className={styles.formInput} defaultValue={walkin.fields.namaLengkap} required autoComplete="off" data-autofocus onChange={() => (walkinOp.current = null)} />
+            </label>
+            <label className={styles.formField}>
+              Nomor WhatsApp
+              <input name="wa" type="tel" inputMode="tel" className={styles.formInput} defaultValue={walkin.fields.wa} required autoComplete="off" onChange={() => (walkinOp.current = null)} />
+            </label>
+            <label className={styles.formField}>
+              Email <span className={styles.formHint}>(boleh dikosongkan)</span>
+              <input name="email" type="email" inputMode="email" className={styles.formInput} defaultValue={walkin.fields.email} autoComplete="off" onChange={() => (walkinOp.current = null)} />
+            </label>
+            {walkin.error && (
+              <p role="alert" className={styles.errText} data-testid="walkin-error">
+                {walkin.error}
+              </p>
+            )}
+            <div className={styles.dialogBtns}>
+              <button type="submit" className={styles.primary} disabled={walkin.busy}>
+                {walkin.busy ? "Menambahkan…" : "Tambah dan tandai hadir"}
+              </button>
+              <button type="button" className={styles.secondary} disabled={walkin.busy} onClick={() => setWalkin(null)}>
+                Batal
+              </button>
+            </div>
+          </form>
         </Dialog>
       )}
 

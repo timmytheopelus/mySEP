@@ -89,6 +89,7 @@ export const MATRIX: Entry[] = [
   { route: "kep/[id]/absen/[subEventId]", method: "GET", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, rule: "§6 Admin: absensi; SEP: tidak mengubah absensi" },
   { route: "kep/[id]/absen/[subEventId]/set", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { pendaftaranId: KEP_PID.pid, hadir: true, opId: OP }, rule: "§6 Admin: absensi; SEP: tidak" },
   { route: "kep/[id]/absen/[subEventId]/semua", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { opId: OP }, rule: "§6 Admin: absensi; SEP: tidak" },
+  { route: "kep/[id]/absen/[subEventId]/tambah", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { namaLengkap: "Peserta Datang", wa: "0812-3456-7890", opId: OP }, rule: "§8b.8 walk-in di layar Absen; spec diam soal peran: PIC dan ADMIN (OWNER CONFIRMATION, Final fix B)" },
   { route: "kep/[id]/peserta/[pid]/mundur", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_PID, body: { opId: OP }, rule: "§6 Admin: tandai mundur" },
   { route: "kep/[id]/peserta/[pid]/penetapan", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_PID, body: { hasil: "LULUS", opId: OP }, rule: "§6 Admin: lulus/tidak" },
 

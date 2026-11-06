@@ -3,7 +3,7 @@ import { cachedList } from "@/lib/airtable/cache";
 import { F, T } from "@/lib/airtable/schema";
 import { assertKepInScope, listKepInScope, listLinkedToEvents, listPesertaInScope, requireRole } from "@/lib/auth/guard";
 import type { Session } from "@/lib/auth/session";
-import { MUNDUR, namesOf } from "@/lib/kep/absensi";
+import { MUNDUR, peopleOf } from "@/lib/kep/absensi";
 
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -34,8 +34,12 @@ export type KepHub = {
   pertemuan: { id: string; urutan: number; agenda: string; tanggal: string; hadir: number; aktif: number; pengajarDitugaskan: boolean; hariIni: boolean }[];
   /** Today's pertemuan, else the next one, else the last one (what "Absen hari ini" opens). */
   pertemuanBerikutnya: string | null;
-  /** Names + status only, never health or contact data. Absent for SEP. */
-  peserta?: { id: string; nama: string; status: PesertaStatus }[];
+  /** PIC / Admin of the owning paroki: may read the health screen (SEP never). */
+  medis: boolean;
+  /** Peserta (not mundur) whose email or birth date is still missing, e.g. walk-ins. A count only; 0 for SEP. */
+  belumLengkap: number;
+  /** Names + status (+ whether the record is incomplete) only, never health or contact data. Absent for SEP. */
+  peserta?: { id: string; nama: string; status: PesertaStatus; belumLengkap: boolean }[];
 };
 
 function statusOf(keterangan: string): PesertaStatus {
@@ -117,15 +121,21 @@ export async function getKepHub(session: Session, eventKepId: string): Promise<K
     sepJadwal: session.role === "SEP" && status !== "Ditolak",
     jadwalTerkunci: status !== "Diajukan",
     absenTersedia: kelola && status === "Disetujui",
+    medis: kelola,
+    belumLengkap: 0,
     statistik,
     pertemuan,
     pertemuanBerikutnya: berikut?.id ?? null,
   };
   if (kelola) {
-    const names = await namesOf(rows.flatMap((x) => ids(x.r.fields[P.teamUmat]).slice(0, 1)));
+    const people = await peopleOf(rows.flatMap((x) => ids(x.r.fields[P.teamUmat]).slice(0, 1)));
     hub.peserta = rows
-      .map((x) => ({ id: x.r.id, nama: names.get(ids(x.r.fields[P.teamUmat])[0] ?? "") || "(tanpa nama)", status: x.status }))
+      .map((x) => {
+        const person = people.get(ids(x.r.fields[P.teamUmat])[0] ?? "");
+        return { id: x.r.id, nama: person?.nama || "(tanpa nama)", status: x.status, belumLengkap: !!person && !person.lengkap };
+      })
       .sort((a, b) => a.nama.localeCompare(b.nama, "id", { sensitivity: "base" }) || a.id.localeCompare(b.id));
+    hub.belumLengkap = hub.peserta.filter((p) => p.belumLengkap && p.status !== "Mundur").length;
   }
   return hub;
 }
