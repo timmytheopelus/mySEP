@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { inflateRawSync } from "node:zlib";
+import { crc32, inflateRawSync } from "node:zlib";
 import ExcelJS from "exceljs";
 import { neutralize } from "@/lib/security/csv";
 import { PesertaInput } from "@/lib/kep/registration";
@@ -9,6 +9,7 @@ export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_ROWS = 500;
 const MAX_UNCOMPRESSED = 20 * 1024 * 1024;
 const MAX_ENTRIES = 200;
+const MAX_ENTRY_BYTES = 15 * 1024 * 1024;
 const REC_ID = /^rec[A-Za-z0-9]{10,}$/;
 
 export class ImportFileError extends Error {
@@ -30,7 +31,29 @@ const COLS = [
 ] as const;
 type Col = (typeof COLS)[number];
 const OPTIONAL: Col[] = ["Nama Baptis", "Riwayat Penyakit", "Riwayat Alergi", "Obat Rutin", "Persetujuan Data Kesehatan"];
-const EXAMPLE_PREFIX = "contoh";
+const EXAMPLE: Record<Col, string> = {
+  "Nama Lengkap": "CONTOH Maria Goreti (hapus baris ini)",
+  "Nama Baptis": "Maria",
+  "Jenis Kelamin": "Wanita",
+  "Tanggal Lahir": "1985-04-12",
+  "Nomor WhatsApp": "081234567890",
+  Email: "contoh@example.com",
+  Alamat: "Jl. Contoh No. 1, Bandung",
+  "Paroki Asal": "Nama paroki",
+  "Status Pernikahan": "Menikah",
+  "Kontak Darurat": "Yohanes 081111111111",
+  "Pendukung Doa 1 Nama": "Ana",
+  "Pendukung Doa 1 Kontak": "081200000001",
+  "Pendukung Doa 2 Nama": "Budi",
+  "Pendukung Doa 2 Kontak": "081200000002",
+  "Riwayat Penyakit": "",
+  "Riwayat Alergi": "",
+  "Obat Rutin": "",
+  "Persetujuan Data Kesehatan": "tidak",
+};
+const PHONE_COLS: Col[] = ["Nomor WhatsApp", "Kontak Darurat", "Pendukung Doa 1 Kontak", "Pendukung Doa 2 Kontak"];
+const MAX_SHEET_ROWS = 600;
+const MAX_SHEET_COLS = 60;
 
 export async function buildTemplateXlsx(opts: { parokiNames?: string[] } = {}): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
@@ -41,27 +64,8 @@ export async function buildTemplateXlsx(opts: { parokiNames?: string[] } = {}): 
   ws.columns.forEach((c, i) => {
     c.width = Math.max(16, COLS[i].length + 4);
   });
-  const example: Record<Col, string> = {
-    "Nama Lengkap": "CONTOH Maria Goreti (hapus baris ini)",
-    "Nama Baptis": "Maria",
-    "Jenis Kelamin": "Wanita",
-    "Tanggal Lahir": "1985-04-12",
-    "Nomor WhatsApp": "081234567890",
-    Email: "contoh@example.com",
-    Alamat: "Jl. Contoh No. 1, Bandung",
-    "Paroki Asal": opts.parokiNames?.[0] ?? "Nama paroki",
-    "Status Pernikahan": "Menikah",
-    "Kontak Darurat": "Yohanes 081111111111",
-    "Pendukung Doa 1 Nama": "Ana",
-    "Pendukung Doa 1 Kontak": "081200000001",
-    "Pendukung Doa 2 Nama": "Budi",
-    "Pendukung Doa 2 Kontak": "081200000002",
-    "Riwayat Penyakit": "",
-    "Riwayat Alergi": "",
-    "Obat Rutin": "",
-    "Persetujuan Data Kesehatan": "tidak",
-  };
-  ws.addRow(COLS.map((c) => example[c]));
+  // Every string written into a sheet goes through neutralize(); any future export MUST do the same.
+  ws.addRow(COLS.map((c) => neutralize(c === "Paroki Asal" ? (opts.parokiNames?.[0] ?? EXAMPLE[c]) : EXAMPLE[c])));
   ws.getRow(2).font = { italic: true, color: { argb: "FF888888" } };
   // Phone, date and name columns are text so Excel does not drop leading zeros or reinterpret dates.
   for (const c of ["Tanggal Lahir", "Nomor WhatsApp", "Pendukung Doa 1 Kontak", "Pendukung Doa 2 Kontak", "Kontak Darurat"] as Col[]) {
@@ -88,7 +92,7 @@ export async function buildTemplateXlsx(opts: { parokiNames?: string[] } = {}): 
   if (opts.parokiNames?.length) {
     const pw = wb.addWorksheet("Daftar Paroki");
     pw.addRow(["Nama Paroki"]).font = { bold: true };
-    opts.parokiNames.forEach((n) => pw.addRow([n]));
+    opts.parokiNames.forEach((n) => pw.addRow([neutralize(n)]));
     pw.getColumn(1).width = 40;
   }
   return Buffer.from(await wb.xlsx.writeBuffer());
@@ -101,7 +105,52 @@ const reject = (m: string): never => {
   throw new ImportFileError(m);
 };
 
-function checkZip(buf: Buffer): void {
+/** Little-endian ZIP writer for already-inflated, already-checked entries (stored, honest sizes). */
+function rebuildZip(entries: { name: string; data: Buffer }[]): Buffer {
+  const parts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let off = 0;
+  for (const e of entries) {
+    const name = Buffer.from(e.name, "utf8");
+    const crc = crc32(e.data);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0);
+    lh.writeUInt16LE(20, 4);
+    lh.writeUInt16LE(0x0800, 6);
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(e.data.length, 18);
+    lh.writeUInt32LE(e.data.length, 22);
+    lh.writeUInt16LE(name.length, 26);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0);
+    ch.writeUInt16LE(20, 4);
+    ch.writeUInt16LE(20, 6);
+    ch.writeUInt16LE(0x0800, 8);
+    ch.writeUInt32LE(crc, 16);
+    ch.writeUInt32LE(e.data.length, 20);
+    ch.writeUInt32LE(e.data.length, 24);
+    ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt32LE(off, 42);
+    parts.push(lh, name, e.data);
+    central.push(ch, name);
+    off += 30 + name.length + e.data.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12);
+  end.writeUInt32LE(off, 16);
+  return Buffer.concat([...parts, cd, end]);
+}
+
+/**
+ * Validates the archive and returns a rebuilt copy. Declared sizes are never trusted: every entry is inflated here
+ * with a hard output budget, its real length must equal the central-directory size AND the local-header size, and
+ * exceljs only ever sees the rebuilt archive made of those checked buffers.
+ */
+function checkZip(buf: Buffer): Buffer {
   if (buf.length < 22 || buf.readUInt32LE(0) !== 0x04034b50) reject("Berkas bukan Excel (.xlsx) yang sah");
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
@@ -118,11 +167,13 @@ function checkZip(buf: Buffer): void {
   if (count === 0xffff || cdOff === 0xffffffff || cdOff + cdSize > buf.length) reject("Berkas bukan Excel (.xlsx) yang sah");
 
   let p = cdOff;
-  let total = 0;
-  let ctEntry: { off: number; csize: number } | null = null;
+  let budget = MAX_UNCOMPRESSED;
+  const out: { name: string; data: Buffer }[] = [];
+  const seen = new Set<string>();
   for (let i = 0; i < count; i++) {
     if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) return reject("Berkas bukan Excel (.xlsx) yang sah");
     const flags = buf.readUInt16LE(p + 8);
+    const method = buf.readUInt16LE(p + 10);
     const csize = buf.readUInt32LE(p + 20);
     const usize = buf.readUInt32LE(p + 24);
     const nlen = buf.readUInt16LE(p + 28);
@@ -130,29 +181,41 @@ function checkZip(buf: Buffer): void {
     const clen = buf.readUInt16LE(p + 32);
     const off = buf.readUInt32LE(p + 42);
     const name = buf.subarray(p + 46, p + 46 + nlen).toString("utf8");
+    p += 46 + nlen + xlen + clen;
     if (csize === 0xffffffff || usize === 0xffffffff) reject("Berkas Excel tidak didukung");
     if (flags & 1) reject("Berkas Excel yang dienkripsi tidak didukung");
-    if (/(^|\/)vbaproject\.bin$/i.test(name) || /\.bin$/i.test(name) && /vba/i.test(name)) reject("Berkas berisi makro dan ditolak");
-    if (name.includes("..") || name.startsWith("/") || name.includes("\\")) reject("Berkas Excel tidak valid");
-    total += usize;
-    if (total > MAX_UNCOMPRESSED) reject("Isi berkas Excel terlalu besar setelah dibuka");
-    if (name === "[Content_Types].xml") ctEntry = { off, csize };
-    p += 46 + nlen + xlen + clen;
+    if (/(^|\/)vbaproject\.bin$/i.test(name) || (/\.bin$/i.test(name) && /vba/i.test(name))) reject("Berkas berisi makro dan ditolak");
+    if (name.includes("..") || name.startsWith("/") || name.includes("\\") || seen.has(name)) reject("Berkas Excel tidak valid");
+    seen.add(name);
+    if (name.endsWith("/")) continue; // directory entry
+    if (usize > MAX_ENTRY_BYTES || usize > budget) reject("Isi berkas Excel terlalu besar setelah dibuka");
+    if (off + 30 > buf.length || buf.readUInt32LE(off) !== 0x04034b50) return reject("Berkas bukan Excel (.xlsx) yang sah");
+    const lflags = buf.readUInt16LE(off + 6);
+    const lcsize = buf.readUInt32LE(off + 18);
+    const lusize = buf.readUInt32LE(off + 22);
+    // With a data descriptor (bit 3) the local sizes are legitimately 0; otherwise they must match the central directory.
+    if (!(lflags & 8) && (lcsize !== csize || lusize !== usize)) reject("Berkas Excel tidak konsisten");
+    const start = off + 30 + buf.readUInt16LE(off + 26) + buf.readUInt16LE(off + 28);
+    if (start + csize > buf.length) reject("Berkas bukan Excel (.xlsx) yang sah");
+    const raw = buf.subarray(start, start + csize);
+    let data: Buffer;
+    try {
+      if (method === 0) data = Buffer.from(raw);
+      else if (method === 8) data = inflateRawSync(raw, { maxOutputLength: Math.max(1, Math.min(budget, usize + 1)) });
+      else return reject("Berkas Excel tidak didukung");
+    } catch {
+      return reject("Berkas Excel rusak atau terlalu besar setelah dibuka");
+    }
+    if (data.length !== usize) reject("Berkas Excel tidak konsisten");
+    budget -= data.length;
+    out.push({ name, data });
   }
+  const ctEntry = out.find((e) => e.name === "[Content_Types].xml");
   if (!ctEntry) return reject("Berkas bukan Excel (.xlsx) yang sah");
-  const { off, csize } = ctEntry;
-  if (off + 30 > buf.length || buf.readUInt32LE(off) !== 0x04034b50) return reject("Berkas bukan Excel (.xlsx) yang sah");
-  const method = buf.readUInt16LE(off + 8);
-  const start = off + 30 + buf.readUInt16LE(off + 26) + buf.readUInt16LE(off + 28);
-  const raw = buf.subarray(start, start + csize);
-  let ct = "";
-  try {
-    ct = (method === 0 ? raw : inflateRawSync(raw, { maxOutputLength: 1024 * 1024 })).toString("utf8");
-  } catch {
-    reject("Berkas bukan Excel (.xlsx) yang sah");
-  }
+  const ct = ctEntry.data.toString("utf8");
   if (/macroEnabled|vbaProject/i.test(ct)) reject("Berkas berisi makro dan ditolak");
   if (!/spreadsheetml\.sheet\.main/.test(ct)) reject("Berkas bukan Excel (.xlsx) yang sah");
+  return rebuildZip(out);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -180,17 +243,17 @@ function cellText(v: unknown, col: Col): string {
   if (typeof x === "number") {
     const s = String(x);
     // Excel drops the leading zero of a phone number typed as a number.
-    return col === "Nomor WhatsApp" && /^8\d+$/.test(s) ? `0${s}` : s;
+    return PHONE_COLS.includes(col) && /^8\d+$/.test(s) ? `0${s}` : s;
   }
   if (typeof x === "boolean") return x ? "ya" : "tidak";
-  return neutralize(x.trim());
+  return x.trim(); // stored as typed; neutralize() is for cells we WRITE into a sheet
 }
 
 function normDate(s: string): string {
   const m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(s);
   return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : s;
 }
-const YES = new Set(["ya", "iya", "y", "yes", "true", "1"]);
+const YES = new Set(["ya", "iya"]);
 
 export type ParsedRow = { row: number; data: PesertaInput };
 export type ImportResult = {
@@ -201,15 +264,16 @@ export type ImportResult = {
 
 export async function parseImport(buf: Buffer, opts: { parokiByName?: Map<string, string> } = {}): Promise<ImportResult> {
   if (buf.length > MAX_FILE_BYTES) throw new ImportFileError("Berkas lebih dari 2 MB", 413);
-  checkZip(buf);
+  const safe = checkZip(buf);
   const wb = new ExcelJS.Workbook();
   try {
-    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    await wb.xlsx.load(safe as unknown as ArrayBuffer);
   } catch {
     return reject("Berkas bukan Excel (.xlsx) yang sah");
   }
   const ws = wb.worksheets[0];
   if (!ws) return { rows: [], items: [], errors: [] };
+  if (ws.rowCount > MAX_SHEET_ROWS || ws.columnCount > MAX_SHEET_COLS) reject(`Lembar terlalu besar. Maksimal ${MAX_ROWS} baris data`);
 
   const colIndex = new Map<Col, number>();
   const head = ws.getRow(1);
@@ -223,7 +287,11 @@ export async function parseImport(buf: Buffer, opts: { parokiByName?: Map<string
 
   const result: ImportResult = { rows: [], items: [], errors: [] };
   let dataRows = 0;
-  for (let r = 2; r <= ws.rowCount; r++) {
+  const rowNums: number[] = [];
+  ws.eachRow({ includeEmpty: false }, (_row, n) => {
+    if (n >= 2) rowNums.push(n);
+  });
+  for (const r of rowNums) {
     const row = ws.getRow(r);
     const cells = {} as Record<Col, string>;
     let any = false;
@@ -235,7 +303,7 @@ export async function parseImport(buf: Buffer, opts: { parokiByName?: Map<string
     if (!any) continue;
     if (++dataRows > MAX_ROWS) reject(`Maksimal ${MAX_ROWS} baris data per berkas`);
 
-    if (cells["Nama Lengkap"].toLowerCase().startsWith(EXAMPLE_PREFIX)) {
+    if (COLS.every((c) => c === "Paroki Asal" || cells[c] === EXAMPLE[c])) {
       result.errors.push({ row: r, message: "Baris CONTOH dari template belum diganti atau dihapus" });
       continue;
     }
