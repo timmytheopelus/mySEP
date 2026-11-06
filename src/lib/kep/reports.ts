@@ -156,7 +156,8 @@ const UNKNOWN = "Tidak diketahui";
 export const MIN_PROFIL_N = 10;
 const USIA = ["<20", "20-29", "30-39", "40-49", "50-59", "60+", UNKNOWN];
 const JK = ["Laki-laki", "Perempuan", UNKNOWN];
-const NIKAH = ["Lajang", "Menikah", "Duda", "Janda", "Lainnya", UNKNOWN];
+/** Live TeamUmat choices: Single / Menikah / Tidak Menikah (marital status). Anything else (legacy text) is Lainnya. */
+const NIKAH = ["Lajang", "Menikah", "Lainnya", UNKNOWN];
 
 function usiaBucket(lahir: string | null, today: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(lahir ?? "");
@@ -166,19 +167,18 @@ function usiaBucket(lahir: string | null, today: string): string {
   if (age < 0 || age > 120) return UNKNOWN;
   return age < 20 ? "<20" : age < 30 ? "20-29" : age < 40 ? "30-39" : age < 50 ? "40-49" : age < 60 ? "50-59" : "60+";
 }
-function jkBucket(v: string): string {
+export function jkBucket(v: string): string {
   const t = v.trim().toLowerCase();
   if (!t) return UNKNOWN;
   if (/^(l\b|laki|pria)/.test(t)) return "Laki-laki";
   if (/^(p\b|perempuan|wanita)/.test(t)) return "Perempuan";
   return UNKNOWN;
 }
-function nikahBucket(v: string): string {
-  const t = v.trim().toLowerCase();
+/** First match wins: the negative forms ("Tidak Menikah", "Belum Menikah") must be tested before "menikah". */
+export function nikahBucket(v: string): string {
+  const t = v.trim().toLowerCase().replace(/\s+/g, " ");
   if (!t) return UNKNOWN;
-  if (/belum|lajang|single/.test(t)) return "Lajang";
-  if (/duda/.test(t)) return "Duda";
-  if (/janda/.test(t)) return "Janda";
+  if (/^(tidak|belum) (menikah|kawin|nikah)\b|lajang|single/.test(t)) return "Lajang";
   if (/menikah|kawin|nikah/.test(t)) return "Menikah";
   return "Lainnya";
 }

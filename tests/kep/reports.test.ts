@@ -7,7 +7,7 @@ vi.mock("@/lib/airtable/client", () => fakeClientModule());
 
 import { listRecords } from "@/lib/airtable/client";
 import { invalidateKepCache } from "@/lib/kep/readModel";
-import { kehadiranPerPertemuan, kepDashboard, profilPeserta, rekapAngkatan, suppressDim, toCsv, trenTahunan } from "@/lib/kep/reports";
+import { jkBucket, kehadiranPerPertemuan, kepDashboard, nikahBucket, profilPeserta, rekapAngkatan, suppressDim, toCsv, trenTahunan } from "@/lib/kep/reports";
 import { GET } from "@/app/api/laporan/[jenis]/route";
 import { SESSION_COOKIE, clearSessionCache, issueSession, type Session } from "@/lib/auth/session";
 import { resetRateLimitMemory } from "@/lib/ratelimit";
@@ -204,13 +204,37 @@ describe("suppressDim", () => {
   });
 });
 
+describe("bucket mapping (live choices)", () => {
+  it.each([
+    ["Single", "Lajang"],
+    ["Tidak Menikah", "Lajang"],
+    [" tidak  menikah ", "Lajang"],
+    ["TIDAK MENIKAH", "Lajang"],
+    ["Belum Menikah", "Lajang"],
+    ["Menikah", "Menikah"],
+    ["Kawin", "Menikah"],
+    ["Duda", "Lainnya"],
+    ["Janda", "Lainnya"],
+    ["", "Tidak diketahui"],
+  ])("statusPernikahan %j -> %s", (v, want) => expect(nikahBucket(v)).toBe(want));
+  it.each([
+    ["Pria", "Laki-laki"],
+    ["Wanita", "Perempuan"],
+    ["laki-laki", "Laki-laki"],
+    ["Perempuan", "Perempuan"],
+    ["", "Tidak diketahui"],
+    ["x", "Tidak diketahui"],
+  ])("jenisKelamin %j -> %s", (v, want) => expect(jkBucket(v)).toBe(want));
+});
+
 describe("profilPeserta", () => {
   it("fixed category lists; small, zero and complementary cells; no names/contact/health", async () => {
     const counted = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15];
     counted.forEach((n, i) => {
       const f = store[T.teamUmat].find((t) => t.id === tid(n))!.fields;
-      f[U.jenisKelamin] = i < 8 ? "Perempuan" : "Laki-laki";
-      f[U.statusPernikahan] = i < 7 ? "Menikah" : i < 12 ? "Lajang" : "Duda";
+      // live select choices: Pria / Wanita and Single / Menikah / Tidak Menikah
+      f[U.jenisKelamin] = i < 8 ? "Wanita" : "Pria";
+      f[U.statusPernikahan] = i < 7 ? "Menikah" : i < 10 ? "Single" : "Tidak Menikah";
       f[U.tanggalLahir] = i < 6 ? `${yr - 35}-01-01` : i < 12 ? `${yr - 45}-01-01` : `${yr - 65}-01-01`;
     });
     invalidateKepCache();
@@ -218,7 +242,8 @@ describe("profilPeserta", () => {
     if (p.suppressed) throw new Error("not expected");
     expect(p.kelompokUsia).toEqual({ "<20": "<5", "20-29": "<5", "30-39": "*", "40-49": 6, "50-59": "<5", "60+": "<5", "Tidak diketahui": "<5" });
     expect(p.jenisKelamin).toEqual({ "Laki-laki": "*", Perempuan: 8, "Tidak diketahui": "<5" });
-    expect(p.statusPernikahan).toEqual({ Lajang: "*", Menikah: 7, Duda: "<5", Janda: "<5", Lainnya: "<5", "Tidak diketahui": "<5" });
+    // "Tidak Menikah" is Lajang, never Menikah (first-match order); the fixed list follows the live choices
+    expect(p.statusPernikahan).toEqual({ Lajang: "*", Menikah: 7, Lainnya: "<5", "Tidak diketahui": "<5" });
     const s = JSON.stringify(p);
     for (const leak of ["Rahasia", "0812", "@rahasia", "KANKER"]) expect(s).not.toContain(leak);
   });
