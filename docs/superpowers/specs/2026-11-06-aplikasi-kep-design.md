@@ -92,7 +92,7 @@ Hasil pembacaan base BPK Bandung (hanya baca): data KEP terbagi dua sisi yang be
 
 **3 tabel baru**
 - **AkunKEP**: email, nama, peran (SEP / PIC Paroki / Admin Paroki), paroki (link ke tabel Paroki), hash password, ID Google, rahasia MFA (terenkripsi), status aktif, login terakhir, jumlah gagal login, waktu kunci. Alasan: tidak ada tabel akun aplikasi; UserSMP dipakai untuk keperluan lain.
-- **SubEvent** (diputuskan: dikerjakan sekarang, umum untuk semua acara BPK): acara (link ke Events), nama agenda, urutan, tanggal, jam mulai, jam selesai, pengajar (link ke Data Pengajar KEP, opsional), keterangan. Satu baris per pertemuan/agenda. KEP memakainya untuk 27 pertemuan tetap; acara BPK lain bisa memakainya untuk agenda majemuk tanpa mengubah alur lama.
+- **SubEvent** (diputuskan: dikerjakan sekarang, umum untuk semua acara BPK): acara (link ke Events), nama agenda, urutan, tanggal, jam mulai, jam selesai, pengajar (link ke Data Pengajar KEP, opsional), keterangan. Satu baris per pertemuan/agenda. KEP memakainya untuk 28 pertemuan tetap (dikonfirmasi pemilik 2026-11-07); acara BPK lain bisa memakainya untuk agenda majemuk tanpa mengubah alur lama.
 - **AuditKEP** (disepakati bersama model absensi): siapa, kapan, aksi, peserta dan pertemuan terkait, sebelum/sesudah. Menyimpan jejak absensi, kelulusan, mundur, dan persetujuan.
 
 **8 field baru pada tabel yang sudah ada**

@@ -1,6 +1,5 @@
 /**
- * Fixed KEP meeting template. SINGLE source of truth: the final order and count are to be confirmed
- * by the owner before merge (flagged in the PR). Edit only this list; `urutan` must stay 1..N.
+ * Fixed KEP meeting template. SINGLE source of truth: 28 entries, owner-confirmed 2026-11-07. Edit only this list; `urutan` must stay 1..N.
  * The last two entries are the retreat days: the schedule puts day 1 one week after the last regular
  * meeting and day 2 on the next day (see scheduleDates).
  */

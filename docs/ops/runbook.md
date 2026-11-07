@@ -311,24 +311,25 @@ Gerbang pengaman (tidak bisa dilewati):
 
 ---
 
-## 16. Pertanyaan terbuka untuk pemilik — "Hak Admin Paroki"
+## 16. Keputusan pemilik dan pertanyaan terbuka — "Hak Admin Paroki"
 
-Mohon konfirmasi tertulis (jawaban mengubah matriks `tests/security/matrix.ts`):
+**Diputuskan pemilik (2026-11-07):**
 
-1. **Tambah peserta manual oleh Admin**: API saat ini mengizinkan Admin Paroki (sesuai §8b.8 "peserta datang langsung"
-   di layar absen), padahal §6 menulis "kelola peserta" hanya untuk PIC. Spesifikasi diam soal siapa yang boleh memakai
-   tombol "+ Tambah peserta" (§8b menyebut layar Absen = layar Admin, dan "PIC melengkapi datanya kemudian"); sekarang
-   PIC dan Admin keduanya boleh. Tetap izinkan Admin? Dan siapa yang melengkapi data peserta datang langsung (belum ada
-   layar sunting)?
-2. **Unduh laporan paroki oleh Admin**: saat ini Admin boleh melihat/mengunduh laporan parokinya sendiri; §6 menulis
-   "laporan paroki" hanya untuk PIC. Tetap izinkan?
-3. **Data kesehatan**: Admin paroki yang bersangkutan dapat melihat data kesehatan peserta (sesuai §4). Benar?
-4. **MFA Admin opsional**: Admin yang belum mendaftar MFA dan login dengan Google langsung masuk tanpa kode
-   (yang sudah mendaftar MFA tetap dimintai kode). Diterima?
-5. **Admin tanpa password** tidak bisa mendaftar MFA sendiri (harus diundang ulang SEP). Diterima?
-6. **Kunjungan rumah** dicatat sebagai kehadiran pada pertemuan "Kunjungan rumah" di jadwal, bukan field tersendiri. Cukup?
-7. Pertanyaan lain yang masih terbuka di catatan proyek: jadwal 28 pertemuan vs "27" di spesifikasi; apakah acara
-   "KEP Exe" ikut dihitung; nama lembaga di footer landing.
-8. **Akses Admin ke data kesehatan dan tambah peserta manual (N3)**: tambah peserta manual mencocokkan seluruh TeamUmat
-   lewat WhatsApp, dan Admin paroki dapat membuka data kesehatan. Keputusan pemilik: dibiarkan; perlu ditinjau bila
-   MFA Admin dijadikan wajib.
+1. **Tambah peserta manual oleh Admin Paroki**: DIIZINKAN (form "Tambah peserta" di hub dan "+ Tambah peserta" di layar
+   Absen). Aturan tetap: tidak pernah menimpa orang yang sudah ada; PIC mencatat persetujuan (flag audit); audit memuat
+   peran pelaku.
+2. **Unduh laporan paroki oleh Admin**: DIIZINKAN.
+3. **Data kesehatan**: Admin paroki yang bersangkutan boleh melihat layar kesehatan.
+4. **N3, akses Admin tanpa wajib MFA**: DITERIMA sebagai risiko (Admin boleh walk-in dan data kesehatan; tambah peserta
+   manual mencocokkan seluruh TeamUmat lewat WhatsApp). Rekomendasi: wajibkan MFA untuk Admin di kemudian hari.
+5. **Jadwal pertemuan tetap 28 entri** sesuai `src/lib/kep/template.ts` (dikonfirmasi pemilik).
+
+Tetap khusus PIC (tidak diubah pemilik): impor Excel, tautan pendaftaran dan rotasi, penugasan pewarta.
+
+**Masih terbuka:**
+
+- **MFA Admin opsional**: Admin yang belum mendaftar MFA dan login dengan Google langsung masuk tanpa kode. Admin tanpa
+  password tidak bisa mendaftar MFA sendiri (harus diundang ulang SEP).
+- **Kunjungan rumah** dicatat sebagai kehadiran pada pertemuan "Kunjungan rumah" di jadwal, bukan field tersendiri. Cukup?
+- Apakah acara "KEP Exe" ikut dihitung; nama lembaga di footer landing; siapa yang melengkapi data peserta datang
+  langsung (belum ada layar sunting).

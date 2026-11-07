@@ -22,7 +22,7 @@ export type KepHub = {
   tanggalSelesai: string | null;
   /** PIC / Admin of the owning paroki: may manage (add peserta, link, jadwal). SEP reads aggregates only. */
   kelola: boolean;
-  /** PIC only: pewarta assignment, registration link, manual peserta, import (Admin Paroki: none of these). */
+  /** PIC only: pewarta assignment, registration link, import (Admin Paroki: none of these; manual peserta is allowed for Admin, owner-decided 2026-11-07). */
   pic: boolean;
   /** SEP may set the pewarta of any KEP that is not rejected. */
   sepJadwal: boolean;

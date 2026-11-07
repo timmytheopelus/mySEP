@@ -53,7 +53,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   }
   let paroki: { id: string; nama: string }[] = [];
   let parokiError = false;
-  if (hub.pic && disetujui) {
+  if (hub.kelola && disetujui) {
     try {
       paroki = await parokiOptions();
     } catch {
@@ -178,8 +178,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
               <p className={styles.muted}>Tautan pendaftaran dan input peserta tersedia setelah KEP disetujui SEP.</p>
             </section>
           ) : null}
-          {hub.pic && disetujui && !parokiError ? <TambahPeserta kepId={id} paroki={paroki} /> : null}
-          {hub.pic && disetujui && parokiError ? (
+          {hub.kelola && disetujui && !parokiError ? <TambahPeserta kepId={id} paroki={paroki} /> : null}
+          {hub.kelola && disetujui && parokiError ? (
             <section className={styles.card}>
               <h2 className={styles.h2}>Tambah peserta</h2>
               <p className={styles.error} role="alert">Formulir belum dapat dimuat. Muat ulang halaman sebentar lagi.</p>

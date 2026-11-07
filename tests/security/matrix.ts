@@ -85,16 +85,16 @@ export const MATRIX: Entry[] = [
   { route: "kep/[id]/subevent/[sid]/jadwal", method: "POST", kind: "auth", roles: ["PIC", "SEP"], kepScoped: true, params: { ...KEP, sid: KEP_SUB.subEventId }, body: { tanggal: "2026-11-12", jamMulai: "19:00", jamSelesai: "21:00", opId: OP }, rule: "§5 PIC: menyesuaikan tanggal (Diajukan dan Disetujui); SEP: kapan saja kecuali Ditolak; Admin: tidak (Final fix B, I7)" },
 
   // ---- PIC + Admin (absensi, mundur, lulus, manual peserta) ----------------------------------
-  { route: "kep/[id]/peserta", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP, rule: "§6 PIC: kelola peserta (manual); ADMIN allowed by ruling (OWNER CONFIRMATION pending)" },
+  { route: "kep/[id]/peserta", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP, rule: "§6 PIC: kelola peserta (manual); ADMIN allowed (OWNER-DECIDED 2026-11-07)" },
   { route: "kep/[id]/absen/[subEventId]", method: "GET", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, rule: "§6 Admin: absensi; SEP: tidak mengubah absensi" },
   { route: "kep/[id]/absen/[subEventId]/set", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { pendaftaranId: KEP_PID.pid, hadir: true, opId: OP }, rule: "§6 Admin: absensi; SEP: tidak" },
   { route: "kep/[id]/absen/[subEventId]/semua", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { opId: OP }, rule: "§6 Admin: absensi; SEP: tidak" },
-  { route: "kep/[id]/absen/[subEventId]/tambah", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { namaLengkap: "Peserta Datang", wa: "0812-3456-7890", opId: OP }, rule: "§8b.8 walk-in di layar Absen; spec diam soal peran: PIC dan ADMIN (OWNER CONFIRMATION, Final fix B)" },
+  { route: "kep/[id]/absen/[subEventId]/tambah", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_SUB, body: { namaLengkap: "Peserta Datang", wa: "0812-3456-7890", opId: OP }, rule: "§8b.8 walk-in di layar Absen; PIC dan ADMIN (OWNER-DECIDED 2026-11-07)" },
   { route: "kep/[id]/peserta/[pid]/mundur", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_PID, body: { opId: OP }, rule: "§6 Admin: tandai mundur" },
   { route: "kep/[id]/peserta/[pid]/penetapan", method: "POST", kind: "auth", roles: ["PIC", "ADMIN"], kepScoped: true, params: KEP_PID, body: { hasil: "LULUS", opId: OP }, rule: "§6 Admin: lulus/tidak" },
 
   // ---- everyone logged in -------------------------------------------------------------------------
-  { route: "laporan/[jenis]", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: true, params: { jenis: "kehadiran" }, query: `kep=${KEP.id}`, rule: "§6 PIC: laporan paroki; SEP: unduh laporan; ADMIN by ruling (OWNER CONFIRMATION pending)" },
+  { route: "laporan/[jenis]", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: true, params: { jenis: "kehadiran" }, query: `kep=${KEP.id}`, rule: "§6 PIC: laporan paroki; SEP: unduh laporan; ADMIN allowed (OWNER-DECIDED 2026-11-07)" },
   { route: "pewarta/[id]", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: false, params: { id: "recSECPEWARTA0001" }, rule: "§8.7 profil pewarta: hanya setelah login" },
   { route: "pewarta/[id]/foto", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: false, params: { id: "recSECPEWARTA0001" }, rule: "§8.6 foto pewarta: hanya setelah login" },
   { route: "sesi/ping", method: "GET", kind: "auth", roles: ["SEP", "PIC", "ADMIN"], kepScoped: false, params: {}, rule: "I3 keep-alive: renews the sliding session (8 h cap), any logged-in role" },

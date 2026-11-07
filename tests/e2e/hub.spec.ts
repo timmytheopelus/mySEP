@@ -94,13 +94,13 @@ test.describe("hub detail KEP (390x844)", () => {
   });
 });
 
-test.describe("Admin Paroki (tanpa kelola pewarta/tautan/form)", () => {
-  test("melihat hub, tetapi tanpa tautan pendaftaran, form peserta, impor, atau jadwal", async ({ page }) => {
+test.describe("Admin Paroki (owner-decided: boleh tambah peserta; tanpa tautan/impor/jadwal)", () => {
+  test("melihat hub dan form Tambah peserta, tetapi tanpa tautan pendaftaran, impor, atau jadwal", async ({ page }) => {
     await as(page, "admA");
     await page.goto(`/kep/${KEP_A}`);
     await expect(page.getByTestId("peserta-item")).toHaveCount(8);
     await expect(page.getByTestId("tautan-daftar")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /tambah peserta/i })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /tambah peserta/i })).toBeVisible();
     await expect(page.getByRole("link", { name: /impor/i })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /jadwal/i })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /absen hari ini/i })).toBeVisible();
